@@ -1,0 +1,10 @@
+# Optional, for developing PyWR Reader — NOT needed to run the app.
+# The app itself still needs only requirements.txt (Flask).
+#
+# This enables tests/test_frontend_smoke.py, which drives the real UI in a
+# headless browser. Without it those tests skip and the rest still run:
+#
+#   ./.venv/bin/pip install -r requirements-dev.txt
+#   ./.venv/bin/playwright install chromium     # ~90 MB, one time
+#   ./run_tests.sh
+playwright>=1.40

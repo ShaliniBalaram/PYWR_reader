@@ -1,9 +1,14 @@
 #!/bin/sh
 # Run the PyWR Reader test suite with the project venv.
 #   ./run_tests.sh
-# Unit + API tests need only Flask (requirements.txt). The integration tests
-# that actually run pywr are skipped automatically until the pywr environment
-# has been set up (from the app: the "Set up PyWR" button).
+# Unit, API and frontend-contract tests need only Flask (requirements.txt).
+# Two groups skip themselves unless their extra is present, so this always
+# runs green on a bare checkout:
+#   * pywr integration — until the pywr environment is set up (from the app:
+#     the "Set up PyWR" button)
+#   * browser smoke    — until playwright is installed:
+#       ./.venv/bin/pip install -r requirements-dev.txt
+#       ./.venv/bin/playwright install chromium
 set -e
 cd "$(dirname "$0")"
 

@@ -10,6 +10,7 @@ with pywr, then scrub through time watching flows move through every edge.
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-green)
+![Licence](https://img.shields.io/badge/Licence-MIT-blue)
 
 ---
 
@@ -55,9 +56,27 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-83 tests, using only Python's stdlib `unittest`. Unit + API tests need just
-Flask; the integration tests that actually execute a model with pywr skip
-themselves automatically until the pywr environment exists.
+**97 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+them pass in under a second — the two groups that need an extra skip
+themselves rather than fail:
+
+| Group | Needs | Covers |
+|---|---|---|
+| unit + API | just Flask | loaders, layout, graph ops, every route |
+| frontend contract | just Flask | that `app.js` still agrees with `index.html` and `app.py` — every `$("id")` it looks up exists, every `/api/…` it calls is served |
+| pywr integration | the pywr environment | really executing a model, exact per-edge flows, scenarios |
+| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing |
+
+The frontend has no build step and no test framework, so the contract tests
+exist to catch what silently breaks otherwise: rename an element id in one
+file and not the other, or call a route that no longer exists, and they fail
+with the name of the culprit. To enable the browser tests too:
+
+```bash
+./.venv/bin/pip install -r requirements-dev.txt
+./.venv/bin/playwright install chromium      # ~90 MB, one time
+./run_tests.sh
+```
 
 ---
 
@@ -247,11 +266,18 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    83 unittest tests (unit + API + integration)
+├── tests/                    97 unittest tests
+│   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
+│   ├── test_app_api.py           every route via Flask's test client
+│   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
+│   ├── test_frontend_smoke.py    the real UI in a browser (needs playwright)
+│   └── test_run_integration.py   really runs pywr (needs .pywr-env)
 ├── examples/gw_network/      small self-contained runnable demo
 ├── examples/scenario_network/  runnable demo with a pywr scenario ensemble
 ├── examples/split_network/   runnable demo with an ambiguous split/junction edge
-├── requirements.txt          flask
+├── requirements.txt          flask (that's the lot)
+├── requirements-dev.txt      playwright, for the optional browser tests
+├── LICENSE                   MIT
 ├── run_tests.sh              test runner
 └── .pywr-env/                private pywr environment (created on demand)
 ```
@@ -281,5 +307,10 @@ PYWR_reader/
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file (compose a
       `wrse_simulator`-style fragment into a runnable model)
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Use it, change it, share it; just keep the
+copyright notice.
 
 Author: Shalini B
