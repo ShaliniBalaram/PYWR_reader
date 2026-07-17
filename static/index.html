@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyWR Reader</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header id="toolbar">
+  <span class="brand">PyWR Reader</span>
+  <button id="btn-new" title="Start an empty model to trace or build from scratch">New</button>
+  <button id="btn-open" title="Open a pywr JSON, .tcm view or nodes.csv">Open</button>
+  <button id="btn-save" title="Save model JSON (positions included)">Save</button>
+  <button id="btn-saveas">Save As</button>
+  <span class="sep"></span>
+  <button id="btn-layout" title="Recompute all positions">Auto-layout</button>
+  <button id="btn-fit" title="Fit network in view">Fit</button>
+  <button id="btn-trace" title="Load a map / schematic image to trace the network over">Trace image</button>
+  <input id="trace-file" type="file" accept="image/*" class="hidden">
+  <span class="sep"></span>
+  <button id="btn-mode-select" class="mode active" title="Select / move nodes">Select</button>
+  <button id="btn-mode-addnode" class="mode" title="Click canvas to add a node">+ Node</button>
+  <select id="add-node-type" title="Type for new nodes"></select>
+  <button id="btn-mode-addedge" class="mode" title="Click source node, then destination">+ Edge</button>
+  <span class="sep"></span>
+  <button id="btn-run" class="primary" title="Run the model with pywr">▶ Run</button>
+  <span id="env-chip" class="chip">checking…</span>
+  <span id="file-chip" class="chip file"></span>
+</header>
+
+<main>
+  <div id="canvas-wrap">
+    <svg id="canvas">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="context-stroke"></path>
+        </marker>
+      </defs>
+      <g id="viewport">
+        <g id="g-bg"></g>
+        <g id="g-edges"></g>
+        <g id="g-nodes"></g>
+        <g id="g-labels"></g>
+      </g>
+    </svg>
+    <div id="canvas-hint" class="hidden"></div>
+    <div id="trace-panel" class="hidden">
+      <div class="tp-head">
+        <span class="tp-title">Trace image</span>
+        <button id="tp-close" class="tiny" title="Hide panel">▾</button>
+      </div>
+      <div class="tp-body">
+        <button id="tp-lock" class="tp-lock">🔓 Unlocked — drag to place</button>
+        <label class="tp-row">Opacity
+          <input id="tp-opacity" type="range" min="5" max="100" value="55"></label>
+        <div class="tp-row">Scale
+          <button id="tp-smaller" class="tiny">−</button>
+          <button id="tp-bigger" class="tiny">+</button>
+          <button id="tp-fit" class="tiny">Fit to view</button>
+        </div>
+        <label class="tp-row" title="Place nodes on click without the name dialog">
+          <input id="tp-quick" type="checkbox"> Quick place (no dialog)</label>
+        <div class="tp-row tp-actions">
+          <button id="tp-replace" class="tiny">Replace…</button>
+          <button id="tp-remove" class="tiny danger">Remove</button>
+        </div>
+        <button id="tp-sidecar" class="tiny" title="Write the image beside the model file so it travels with the project">💾 Save beside model</button>
+        <p id="tp-sidecar-status" class="muted small"></p>
+        <p id="tp-hint" class="muted small"></p>
+      </div>
+    </div>
+    <div id="empty-state">
+      <h2>No model open</h2>
+      <p>Open a PyWR model JSON, a <code>.tcm</code> viewer file, or a
+         Graph&nbsp;Overlay <code>nodes.csv</code>.</p>
+      <button id="btn-open2" class="primary">Open a model…</button>
+    </div>
+    <div id="timebar" class="hidden">
+      <button id="btn-play" title="Play / pause">▶</button>
+      <input id="time-slider" type="range" min="0" max="0" value="0">
+      <span id="time-date" class="mono">—</span>
+      <span id="time-idx" class="mono muted"></span>
+      <span class="legend-flow">
+        <span class="muted">flow</span>
+        <span class="grad"></span>
+        <span id="flow-max" class="mono muted"></span>
+      </span>
+      <button id="btn-values" class="active"
+              title="Show flow values along the selected node's path">123</button>
+    </div>
+  </div>
+
+  <aside id="sidebar">
+    <nav id="tabs">
+      <button data-tab="node" class="active">Node</button>
+      <button data-tab="runs">Runs</button>
+      <button data-tab="model">Model</button>
+    </nav>
+    <section id="tab-node" class="tab active"></section>
+    <section id="tab-runs" class="tab">
+      <div id="scenario-block" class="pane-block hidden">
+        <h3>Scenario</h3>
+        <p class="muted small">This model defines pywr scenarios. Each run solves
+          the whole ensemble in one pass — pick which combination to show on the
+          canvas and in charts. Run several members and tick them in the runs
+          list to overlay.</p>
+        <div id="scenario-picker" class="stack"></div>
+      </div>
+      <div class="pane-block">
+        <h3>Simulation runs</h3>
+        <div id="runs-list" class="stack"></div>
+        <div class="row gap">
+          <button id="btn-run2" class="primary">▶ Run model</button>
+        </div>
+      </div>
+      <div class="pane-block">
+        <h3>What-if changes <span id="whatif-count" class="pill hidden"></span></h3>
+        <p class="muted small">Stage value changes from a node's parameter list
+          (Δ button), then run — the model file itself is not modified.</p>
+        <div id="whatif-list" class="stack"></div>
+        <button id="btn-run-whatif" class="primary" disabled>▶ Run what-if</button>
+      </div>
+    </section>
+    <section id="tab-model" class="tab"></section>
+  </aside>
+</main>
+
+<div id="modal-backdrop" class="hidden">
+  <div id="modal"></div>
+</div>
+<div id="toast" class="hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

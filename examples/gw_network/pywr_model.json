@@ -1,0 +1,319 @@
+{
+  "metadata": {
+    "title": "GW network demo (daily)",
+    "description": "Groundwater divided into base abstraction, top-up abstraction, and total abstraction (base + topup converging into the main river). Includes reservoir, river gauge with MRF, and a flow split to urban demand, irrigation demand, and river outlet.",
+    "minimum_version": "1.19.0",
+    "author": "Shalini B"
+  },
+  "timestepper": {
+    "start": "2000-01-01",
+    "end": "2000-12-31",
+    "timestep": 1
+  },
+  "nodes": [
+    {
+      "name": "Rainfall_Catchment",
+      "type": "catchment",
+      "flow": {
+        "type": "CSVParameter",
+        "url": "params.csv",
+        "column": "Rainfall_Flow",
+        "index_col": "Date",
+        "parse_dates": true
+      },
+      "position": {
+        "editor_position": [
+          110,
+          100
+        ],
+        "schematic": [
+          110,
+          100
+        ]
+      }
+    },
+    {
+      "name": "GW_Base",
+      "type": "input",
+      "max_flow": {
+        "type": "CSVParameter",
+        "url": "params.csv",
+        "column": "GW_Base_MaxFlow",
+        "index_col": "Date",
+        "parse_dates": true
+      },
+      "min_flow": 0.0,
+      "cost": 1.0,
+      "position": {
+        "editor_position": [
+          270,
+          270
+        ],
+        "schematic": [
+          270,
+          270
+        ]
+      }
+    },
+    {
+      "name": "GW_Topup",
+      "type": "input",
+      "max_flow": {
+        "type": "CSVParameter",
+        "url": "params.csv",
+        "column": "GW_Topup_MaxFlow",
+        "index_col": "Date",
+        "parse_dates": true
+      },
+      "min_flow": 0.0,
+      "cost": 5.0,
+      "position": {
+        "editor_position": [
+          270,
+          420
+        ],
+        "schematic": [
+          270,
+          420
+        ]
+      }
+    },
+    {
+      "name": "GW_Total",
+      "type": "link",
+      "cost": 0.0,
+      "position": {
+        "editor_position": [
+          440,
+          340
+        ],
+        "schematic": [
+          440,
+          340
+        ]
+      }
+    },
+    {
+      "name": "River_Main",
+      "type": "river",
+      "cost": 0.0,
+      "position": {
+        "editor_position": [
+          580,
+          100
+        ],
+        "schematic": [
+          580,
+          100
+        ]
+      }
+    },
+    {
+      "name": "River_Gauge_A",
+      "type": "rivergauge",
+      "mrf": 10.0,
+      "mrf_cost": -500.0,
+      "cost": 0.0,
+      "position": {
+        "editor_position": [
+          750,
+          100
+        ],
+        "schematic": [
+          750,
+          100
+        ]
+      }
+    },
+    {
+      "name": "Reservoir_A",
+      "type": "reservoir",
+      "max_volume": 500.0,
+      "min_volume": 50.0,
+      "initial_volume": 350.0,
+      "cost": 0.0,
+      "position": {
+        "editor_position": [
+          940,
+          100
+        ],
+        "schematic": [
+          940,
+          100
+        ]
+      }
+    },
+    {
+      "name": "River_Split_A",
+      "type": "riversplit",
+      "factors": [
+        0.6,
+        0.3,
+        0.1
+      ],
+      "slot_names": [
+        "urban_slot",
+        "irrigation_slot",
+        "outlet_slot"
+      ],
+      "position": {
+        "editor_position": [
+          1100,
+          290
+        ],
+        "schematic": [
+          1100,
+          290
+        ]
+      }
+    },
+    {
+      "name": "Demand_Urban",
+      "type": "output",
+      "max_flow": {
+        "type": "CSVParameter",
+        "url": "params.csv",
+        "column": "Urban_Demand",
+        "index_col": "Date",
+        "parse_dates": true
+      },
+      "min_flow": 0.0,
+      "cost": -200.0,
+      "position": {
+        "editor_position": [
+          1350,
+          270
+        ],
+        "schematic": [
+          1350,
+          270
+        ]
+      }
+    },
+    {
+      "name": "Demand_Irrigation",
+      "type": "output",
+      "max_flow": {
+        "type": "CSVParameter",
+        "url": "params.csv",
+        "column": "Irrigation_Demand",
+        "index_col": "Date",
+        "parse_dates": true
+      },
+      "min_flow": 0.0,
+      "cost": -100.0,
+      "position": {
+        "editor_position": [
+          1350,
+          430
+        ],
+        "schematic": [
+          1350,
+          430
+        ]
+      }
+    },
+    {
+      "name": "River_Outlet",
+      "type": "output",
+      "min_flow": 0.0,
+      "cost": -500.0,
+      "position": {
+        "editor_position": [
+          1350,
+          100
+        ],
+        "schematic": [
+          1350,
+          100
+        ]
+      }
+    }
+  ],
+  "edges": [
+    [
+      "Rainfall_Catchment",
+      "River_Main"
+    ],
+    [
+      "GW_Base",
+      "GW_Total"
+    ],
+    [
+      "GW_Topup",
+      "GW_Total"
+    ],
+    [
+      "GW_Total",
+      "River_Main"
+    ],
+    [
+      "River_Main",
+      "River_Gauge_A"
+    ],
+    [
+      "River_Gauge_A",
+      "Reservoir_A"
+    ],
+    [
+      "Reservoir_A",
+      "River_Split_A"
+    ],
+    [
+      "River_Split_A",
+      "Demand_Urban",
+      "urban_slot"
+    ],
+    [
+      "River_Split_A",
+      "Demand_Irrigation",
+      "irrigation_slot"
+    ],
+    [
+      "River_Split_A",
+      "River_Outlet",
+      "outlet_slot"
+    ]
+  ],
+  "parameters": {},
+  "recorders": {
+    "GW_Base_flow": {
+      "type": "NumpyArrayNodeRecorder",
+      "node": "GW_Base"
+    },
+    "GW_Topup_flow": {
+      "type": "NumpyArrayNodeRecorder",
+      "node": "GW_Topup"
+    },
+    "GW_Total_flow": {
+      "type": "NumpyArrayNodeRecorder",
+      "node": "GW_Total"
+    },
+    "Urban_supply": {
+      "type": "NumpyArrayNodeRecorder",
+      "node": "Demand_Urban"
+    },
+    "Irrigation_supply": {
+      "type": "NumpyArrayNodeRecorder",
+      "node": "Demand_Irrigation"
+    },
+    "Reservoir_volume": {
+      "type": "NumpyArrayStorageRecorder",
+      "node": "Reservoir_A"
+    },
+    "Gauge_flow": {
+      "type": "NumpyArrayNodeRecorder",
+      "node": "River_Gauge_A"
+    }
+  },
+  "tables": {},
+  "scenarios": [],
+  "includes": [],
+  "pywr_editor": {
+    "schematic_size": [
+      1600,
+      600
+    ],
+    "shapes": []
+  }
+}

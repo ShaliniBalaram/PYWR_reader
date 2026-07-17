@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pywr-reader",
+      "runtimeExecutable": "/Volumes/Shalini B/Research work/PYWR_reader/.venv/bin/python",
+      "runtimeArgs": ["app.py"],
+      "port": 5321
+    }
+  ]
+}

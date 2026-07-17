@@ -1,0 +1,10 @@
+.venv/
+.pywr-env/
+.micromamba/
+.uv-bootstrap/
+.pywr-env-setup.log
+__pycache__/
+*.pyc
+._*
+.DS_Store
+.pywr_reader_run_*.json
