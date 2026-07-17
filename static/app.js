@@ -1572,6 +1572,51 @@ function renderScenarioPicker() {
 }
 
 /* ------------------------------------------------------------- runs */
+/** Ask the browser to download a URL (the server sets the filename). */
+function download(url) {
+  const a = el("a", { href: url, download: "" });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+/** Write a run beside the model. Runs live in memory, so this is the only
+ *  thing that makes one outlive the app. */
+async function saveRun(run) {
+  try {
+    const res = await api(`/api/run/${run.id}/save`, {});
+    toast(`Saved ${res.path.split(/[\\/]/).pop()} beside the model`);
+  } catch (err) { toast(err.message, true); }
+}
+
+/** Load a run saved earlier, straight back into the runs list. */
+function openRunModal() {
+  const box = el("input", { class: "pathbox mono", type: "text",
+    placeholder: "full path to a .pywrrun.json saved earlier" });
+  const go = async () => {
+    const path = box.value.trim();
+    if (!path) return;
+    try {
+      const res = await api("/api/run/open", { path });
+      closeModal();
+      await refreshRuns();
+      await activateRun(res.run_id);
+      toast("Run loaded");
+    } catch (err) { toast(err.message, true); }
+  };
+  openModal(
+    el("h3", {}, "Open a saved run"),
+    el("p", { class: "muted small" },
+      "A run saved with the run list's save button — written beside the "
+      + "model as <model>.<run>.pywrrun.json."),
+    box,
+    el("div", { class: "row gap", style: "margin-top:10px;justify-content:flex-end" },
+      el("button", { onclick: closeModal }, "Cancel"),
+      el("button", { class: "primary", onclick: go }, "Open")));
+  box.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  box.focus();
+}
+
 function resetRunsState() {
   S.activeRun = null; S.frames.clear(); S.frameReq.clear();
   S.compare.clear(); S.seriesCache.clear(); S.t = 0;
@@ -1659,6 +1704,16 @@ function renderRuns() {
           },
         }, `⚠ ${run.warnings.length}`));
       }
+      item.append(
+        el("button", {
+          class: "tiny", title: "Download every node and edge series as CSV",
+          onclick: e => { e.stopPropagation(); download(`/api/run/${run.id}/csv`); },
+        }, "csv"),
+        el("button", {
+          class: "tiny",
+          title: "Write this run beside the model so it survives a restart",
+          onclick: e => { e.stopPropagation(); saveRun(run); },
+        }, "save"));
       const cb = el("input", {
         type: "checkbox", title: "Overlay in the node chart",
         ...(S.compare.has(run.id) ? { checked: "" } : {}),
@@ -1873,8 +1928,17 @@ async function renderNodeChart() {
     } catch { /* node may not exist in that run */ }
   }
   if (S.sel && S.sel.kind === "node" && S.sel.name === name) {
-    box.replaceChildren(
-      el("h3", {}, `${seriesList[0] ? seriesList[0].kind : "series"} over time`));
+    const heading = el("h3", { class: "chart-head" },
+      `${seriesList[0] ? seriesList[0].kind : "series"} over time`);
+    if (seriesList.length) {
+      // exports exactly the runs plotted here, one column each
+      heading.append(el("button", {
+        class: "tiny", title: "Download this node's series as CSV",
+        onclick: () => download(`/api/run/${runIds[0]}/node.csv?node=`
+          + encodeURIComponent(name) + "&compare=" + runIds.join(",")),
+      }, "csv"));
+    }
+    box.replaceChildren(heading);
     if (!seriesList.length) {
       box.append(el("p", { class: "muted small" }, "No recorded series for this node."));
       return;
@@ -2160,6 +2224,8 @@ $("btn-mode-addedge").addEventListener("click", () => {
 });
 $("btn-run").addEventListener("click", () => startRun(null, null, currentScenarioIndex()));
 $("btn-run2").addEventListener("click", () => startRun(null, null, currentScenarioIndex()));
+$("btn-open-run").addEventListener("click", openRunModal);
+$("btn-open-run").addEventListener("click", openRunModal);
 $("btn-run-whatif").addEventListener("click", () =>
   startRun(whatifOverrides(), `what-if ${S.runs.length + 1}`, currentScenarioIndex()));
 $("btn-play").addEventListener("click", () => S.playing ? stopPlay() : startPlay());

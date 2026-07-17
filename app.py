@@ -5,6 +5,8 @@ Run:  python app.py   →  http://127.0.0.1:5321
 
 import base64
 import binascii
+import csv
+import io
 import json
 import os
 import string
@@ -14,7 +16,7 @@ import threading
 import time
 import uuid
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from pywr_reader import (dataresolve, envsetup, graphops, layout as layout_mod,
                          model_io)
@@ -742,11 +744,37 @@ def _estimate_edge_flows(model, node_series, exact_edges=None):
     return edges_out
 
 
+RUN_TMP_PREFIX = ".pywr_reader_run_"
+
+
+def _sweep_run_temps(directory):
+    """Delete orphaned run snapshots. The run itself removes its own, but a
+    force-quit or a crash skips that — and the snapshot has to sit beside the
+    model (the runner chdirs there so relative table urls resolve), so they
+    pile up in the user's model folder for ever."""
+    live = {rid for rid, r in RUNS.items()
+            if r.get("status") in ("queued", "running")}
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    for name in names:
+        if not (name.startswith(RUN_TMP_PREFIX) and name.endswith(".json")):
+            continue
+        if name[len(RUN_TMP_PREFIX):-len(".json")] in live:
+            continue                    # belongs to a run still in flight
+        try:
+            os.remove(os.path.join(directory, name))
+        except OSError:
+            pass
+
+
 def _run_worker(run_id, model_snapshot, model_path, overrides):
     run = RUNS[run_id]
     python = envsetup.env_python()
     workdir = os.path.dirname(model_path) if model_path else tempfile.gettempdir()
-    tmp_model = os.path.join(workdir, f".pywr_reader_run_{run_id}.json")
+    _sweep_run_temps(workdir)
+    tmp_model = os.path.join(workdir, f"{RUN_TMP_PREFIX}{run_id}.json")
     tmp_out = os.path.join(tempfile.gettempdir(), f"pywr_reader_{run_id}.json")
     tmp_over = None
     try:
@@ -918,6 +946,145 @@ def run_frames(run_id):
                                   for e in run["edges"]],
                     "node_keys": node_names,
                     "edges": frames_edges, "nodes": frames_nodes})
+
+
+def _csv_response(rows, filename):
+    """Send rows as a CSV download. utf-8-sig so Excel reads node names with
+    accents properly instead of mojibake."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerows(rows)
+    return Response(
+        buf.getvalue().encode("utf-8-sig"),
+        # content_type, not mimetype: Flask appends its own charset to a
+        # text/* mimetype, which would leave two charsets in the header
+        content_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def _safe_stem(text, fallback="run"):
+    """A filename-safe version of a run label ('what-if 8' → 'what-if-8')."""
+    keep = [c if (c.isalnum() or c in "-_") else "-" for c in (text or "")]
+    stem = "".join(keep).strip("-")
+    while "--" in stem:
+        stem = stem.replace("--", "-")
+    return stem or fallback
+
+
+@app.get("/api/run/<run_id>/csv")
+def run_csv(run_id):
+    """The whole run as one wide CSV: a row per timestep, a column per node
+    series and per edge. Edges pywr couldn't attribute exactly are marked, so
+    a reader never mistakes an estimate for a recorded flow."""
+    run = RUNS.get(run_id)
+    if not run or run["status"] != "done":
+        return _err("run not available", 404)
+    node_cols = []
+    for name in sorted(run["nodes"]):
+        for kind in ("flow", "volume"):
+            if run["nodes"][name].get(kind) is not None:
+                node_cols.append((f"{name} ({kind})", run["nodes"][name][kind]))
+    edge_cols = []
+    for edge in run["edges"]:
+        if edge["series"] is None:
+            continue
+        label = f"{edge['src']} -> {edge['dst']} (flow)"
+        if not edge["exact"]:
+            label += " [estimated]"
+        edge_cols.append((label, edge["series"]))
+
+    header = ["date"] + [c[0] for c in node_cols] + [c[0] for c in edge_cols]
+    rows = [header]
+    for i, date in enumerate(run["dates"]):
+        row = [date]
+        for _, series in node_cols + edge_cols:
+            row.append(series[i] if i < len(series) else "")
+        rows.append(row)
+    return _csv_response(rows, f"{_safe_stem(run['label'])}.csv")
+
+
+@app.get("/api/run/<run_id>/node.csv")
+def run_node_csv(run_id):
+    """One node's series, with a column per run — so what you download is what
+    the chart is showing, overlaid comparisons included."""
+    name = request.args.get("node")
+    ids = [run_id] + [i for i in (request.args.get("compare") or "").split(",")
+                      if i and i != run_id]
+    runs = [RUNS.get(i) for i in ids]
+    runs = [r for r in runs if r and r["status"] == "done"
+            and (r.get("nodes") or {}).get(name)]
+    if not runs:
+        return _err(f"no results for node {name!r}", 404)
+
+    cols = []
+    for run in runs:
+        data = run["nodes"][name]
+        kind = "volume" if data.get("volume") is not None else "flow"
+        cols.append((f"{run['label']} ({kind})", data[kind]))
+    rows = [["date"] + [c[0] for c in cols]]
+    for i, date in enumerate(runs[0]["dates"]):
+        rows.append([date] + [s[i] if i < len(s) else "" for _, s in cols])
+    return _csv_response(rows, f"{_safe_stem(name, 'node')}.csv")
+
+
+@app.post("/api/run/<run_id>/save")
+def save_run(run_id):
+    """Write a finished run beside the model so it outlives the app. Runs live
+    in memory otherwise, and every one is lost when the server stops."""
+    run = RUNS.get(run_id)
+    if not run or run["status"] != "done":
+        return _err("run not available", 404)
+    body = request.get_json(force=True, silent=True) or {}
+    path = body.get("path")
+    if not path:
+        if not STATE["path"]:
+            return _err("save the model first, or give a path")
+        stem = os.path.splitext(STATE["path"])[0]
+        path = f"{stem}.{_safe_stem(run['label'])}.pywrrun.json"
+    payload = {"pywr_reader_run": 1, "label": run["label"],
+               "dates": run["dates"], "nodes": run["nodes"],
+               "edges": run["edges"], "meta": run.get("meta"),
+               "warnings": run.get("warnings", []),
+               "overrides": run.get("overrides"),
+               "model": os.path.basename(STATE["path"] or "")}
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    except OSError as exc:
+        return _err(exc)
+    return jsonify({"ok": True, "path": path})
+
+
+@app.post("/api/run/open")
+def open_run():
+    """Load a saved run back into the runs list."""
+    body = request.get_json(force=True, silent=True) or {}
+    path = (body.get("path") or "").strip()
+    if not os.path.isfile(path):
+        return _err(f"file not found: {path}")
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return _err(f"could not read the run: {exc}")
+    if not isinstance(data, dict) or "pywr_reader_run" not in data:
+        return _err("not a saved PyWR Reader run")
+    for key in ("dates", "nodes", "edges"):
+        if key not in data:
+            return _err(f"saved run has no {key!r}")
+    run_id = uuid.uuid4().hex[:8]
+    max_flow = max((max(e["series"]) for e in data["edges"]
+                    if e.get("series")), default=0.0)
+    RUNS[run_id] = {
+        "id": run_id, "status": "done",
+        "label": data.get("label") or os.path.basename(path),
+        "dates": data["dates"], "nodes": data["nodes"], "edges": data["edges"],
+        "meta": data.get("meta"), "warnings": data.get("warnings", []),
+        "overrides": data.get("overrides"), "started_at": time.time(),
+        "max_edge_flow": max_flow, "loaded_from": path,
+    }
+    RUN_ORDER.append(run_id)
+    return jsonify({"ok": True, "run_id": run_id})
 
 
 @app.get("/api/run/<run_id>/series")

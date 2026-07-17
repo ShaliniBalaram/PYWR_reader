@@ -228,6 +228,123 @@ class TestApi(unittest.TestCase):
         self.assertEqual(data["n_combinations"], 1)
         self.assertEqual(data["scenario_dims"], [])
 
+    # -- getting results out ----------------------------------------------
+    def _fake_run(self, label="run 1"):
+        """A finished run in memory, without needing pywr."""
+        rid = "test1234"
+        app_module.RUNS[rid] = {
+            "id": rid, "status": "done", "label": label,
+            "dates": ["2000-01-01", "2000-01-02"],
+            "nodes": {"Res": {"volume": [10.0, 11.0]},
+                      "Dem": {"flow": [1.0, 2.0]}},
+            "edges": [{"src": "Res", "dst": "Dem", "series": [1.0, 2.0],
+                       "exact": True},
+                      {"src": "A", "dst": "B", "series": [3.0, 4.0],
+                       "exact": False}],
+            "meta": {"solver": "glpk"}, "warnings": [], "overrides": None,
+            "started_at": 0, "max_edge_flow": 4.0,
+        }
+        app_module.RUN_ORDER.append(rid)
+        return rid
+
+    def tearDown(self):
+        app_module.RUNS.clear()
+        app_module.RUN_ORDER.clear()
+
+    def test_whole_run_csv_has_every_node_and_edge(self):
+        rid = self._fake_run()
+        r = self.c.get(f"/api/run/{rid}/csv")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("attachment", r.headers["Content-Disposition"])
+        # exactly one charset — Flask appends its own to a text/* mimetype
+        self.assertEqual(r.headers["Content-Type"].count("charset"), 1)
+        rows = r.data.decode("utf-8-sig").splitlines()
+        header = rows[0].split(",")
+        self.assertEqual(header[0], "date")
+        self.assertIn("Res (volume)", header)
+        self.assertIn("Dem (flow)", header)
+        self.assertIn("Res -> Dem (flow)", header)
+        # an estimated edge is labelled, so it is never mistaken for recorded
+        self.assertIn("A -> B (flow) [estimated]", header)
+        self.assertEqual(len(rows), 3)                    # header + 2 dates
+        self.assertTrue(rows[1].startswith("2000-01-01,"))
+
+    def test_node_csv_has_a_column_per_compared_run(self):
+        rid = self._fake_run("base")
+        other = "test5678"
+        app_module.RUNS[other] = dict(app_module.RUNS[rid], id=other,
+                                      label="what-if")
+        app_module.RUN_ORDER.append(other)
+        r = self.c.get(f"/api/run/{rid}/node.csv?node=Res&compare={other}")
+        rows = r.data.decode("utf-8-sig").splitlines()
+        self.assertEqual(rows[0], "date,base (volume),what-if (volume)")
+        self.assertEqual(rows[1], "2000-01-01,10.0,10.0")
+        self.assertIn('filename="Res.csv"', r.headers["Content-Disposition"])
+
+    def test_node_csv_for_an_unknown_node_is_404(self):
+        rid = self._fake_run()
+        self.assertEqual(self.c.get(f"/api/run/{rid}/node.csv?node=Ghost")
+                         .status_code, 404)
+
+    def test_csv_of_an_unfinished_run_is_404(self):
+        app_module.RUNS["pending"] = {"id": "pending", "status": "running",
+                                      "label": "x"}
+        self.assertEqual(self.c.get("/api/run/pending/csv").status_code, 404)
+
+    def test_save_run_then_reopen_it_after_a_restart(self):
+        rid = self._fake_run("baseline")
+        out = os.path.join(tempfile.mkdtemp(), "r.pywrrun.json")
+        res = self.c.post(f"/api/run/{rid}/save", json={"path": out}).get_json()
+        self.assertTrue(res["ok"])
+        self.assertTrue(os.path.isfile(out))
+
+        app_module.RUNS.clear()          # the app restarts; memory is gone
+        app_module.RUN_ORDER.clear()
+        opened = self.c.post("/api/run/open", json={"path": out}).get_json()
+        self.assertTrue(opened["ok"])
+        run = app_module.RUNS[opened["run_id"]]
+        self.assertEqual(run["label"], "baseline")
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["dates"], ["2000-01-01", "2000-01-02"])
+        self.assertEqual(run["max_edge_flow"], 4.0)     # recomputed on load
+        # and it serves like any other run
+        self.assertEqual(self.c.get(f"/api/run/{opened['run_id']}")
+                         .get_json()["n_steps"], 2)
+
+    def test_save_run_defaults_to_a_sidecar_beside_the_model(self):
+        out = os.path.join(tempfile.mkdtemp(), "m.json")
+        self._open_example()
+        self.c.post("/api/save", json={"path": out})
+        rid = self._fake_run("what-if 8")
+        res = self.c.post(f"/api/run/{rid}/save", json={}).get_json()
+        # label is made filename-safe, beside the model, .pywrrun.json
+        self.assertEqual(res["path"],
+                         os.path.join(os.path.dirname(out),
+                                      "m.what-if-8.pywrrun.json"))
+
+    def test_open_run_rejects_a_file_that_is_not_a_run(self):
+        r = self.c.post("/api/run/open", json={"path": EXAMPLE})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not a saved", r.get_json()["error"])
+
+    def test_open_run_rejects_a_missing_file(self):
+        r = self.c.post("/api/run/open", json={"path": "/no/such/run.json"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_stale_run_snapshots_are_swept(self):
+        # a force-quit leaves the snapshot beside the model; the next run
+        # clears the orphans but must not touch one still in flight
+        tmp = tempfile.mkdtemp()
+        orphan = os.path.join(tmp, app_module.RUN_TMP_PREFIX + "dead.json")
+        live = os.path.join(tmp, app_module.RUN_TMP_PREFIX + "alive.json")
+        for p in (orphan, live):
+            open(p, "w").close()
+        app_module.RUNS["alive"] = {"id": "alive", "status": "running",
+                                    "label": "x"}
+        app_module._sweep_run_temps(tmp)
+        self.assertFalse(os.path.exists(orphan), "orphan not swept")
+        self.assertTrue(os.path.exists(live), "swept a run in flight")
+
     # -- the Open dialog's file browser, on every platform -----------------
     def test_browse_lists_dirs_and_models_with_full_paths(self):
         tmp = tempfile.mkdtemp()

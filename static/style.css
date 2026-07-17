@@ -48,6 +48,9 @@ body {
 .brand { font-weight: 700; color: var(--ink); margin-right: 10px; }
 .sep { width: 1px; height: 20px; background: var(--baseline); margin: 0 4px; }
 
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.run-item .tiny { padding: 1px 6px; }
+
 /* JSON editor */
 .json-edit {
   width: 100%; min-height: 46vh; resize: vertical;

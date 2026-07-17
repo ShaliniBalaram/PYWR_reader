@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**101 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**110 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -231,12 +231,23 @@ Turn a picture of a water network into a pywr model:
    (e.g. a demand or a max_flow), then **▶ Run what-if** — the model file is
    *not* modified. Tick several runs in the Runs tab to overlay them in the
    chart and compare.
-5. **Scenarios:** if the model defines pywr scenarios, a **Scenario** picker
+5. **Getting the numbers out.** Runs live in memory, so nothing survives
+   stopping the app unless you save it:
+
+   | Button | What you get |
+   |---|---|
+   | **csv** (on a run) | The whole run as one wide CSV — a row per timestep, a column per node series *and* per edge. Edges pywr couldn't attribute exactly are headed `[estimated]`, so a reader never mistakes an estimate for a recorded flow. |
+   | **csv** (on a node's chart) | Just that node, with a column per run currently plotted — so a what-if comparison downloads exactly as you see it. |
+   | **save** (on a run) | Writes the run beside the model as `<model>.<run>.pywrrun.json`. **Open run…** loads it back — after a restart, on another machine, whenever. |
+
+   CSVs are written utf-8-sig, so Excel reads accented node names correctly.
+
+6. **Scenarios:** if the model defines pywr scenarios, a **Scenario** picker
    appears at the top of the Runs tab — one dropdown per scenario dimension.
    pywr solves the whole ensemble in a single run; the picker chooses which
    combination is drawn on the canvas and in the charts. Run different members
    and tick them in the Runs list to overlay them.
-6. **Warnings:** if pywr emits non-fatal notes during a run (for example a
+7. **Warnings:** if pywr emits non-fatal notes during a run (for example a
    model authored for a newer pywr than the bootstrapped one), the run still
    completes and a **⚠** badge appears on it in the Runs tab — click it to read
    the messages. Real failures show as *failed* with the full traceback.
@@ -256,7 +267,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    101 unittest tests
+├── tests/                    110 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
@@ -292,6 +303,8 @@ PYWR_reader/
 - [x] Editable JSON — the whole model, a section, or a single parameter/node,
       validated before it lands (duplicate names, dangling edges, bad blocks);
       renaming a node rewrites every reference to it
+- [x] Export results — whole-run and per-node CSV; save a run beside the
+      model and reopen it later
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file, for model suites that
       split the network and its parameters across separate files
