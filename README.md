@@ -112,7 +112,7 @@ Every node can also be dragged. **Save** writes positions into each node's
 `position.schematic`, so the file stays a valid pywr model.
 
 **External data files:** real models point `tables`/`parameters` at data files
-by absolute paths from another machine (`C:\Data\...\SEW_RZ5.xlsx`). On open,
+by absolute paths from another machine (`C:\Data\...\inflows.xlsx`). On open,
 the app finds each referenced file by basename — in the model's folder, its
 parent/grandparent, and any folders you add — and shows a ✓/✗ report in
 **Model → Data files**. If something's missing it says so and a run is blocked
@@ -233,26 +233,6 @@ Turn a picture of a water network into a pywr model:
 
 ---
 
-## Worked example — a real 80-year model (SEW WRZ5)
-
-This model was tested end to end from
-`/Volumes/Shalini B/Research work/Generic PYWR/zone 5/zone 5/`:
-
-1. **Open** `SEW WRZ5.json` (162 nodes, 145 edges). Its stored positions are
-   all `[1000, 1000]`, so auto-layout draws the network.
-2. **Model → Data files** shows both referenced files resolved: `SEW_RZ5.xlsx`
-   (in the model folder) and `SEW_WRZ5_Historic_timeseries.h5` (found a couple
-   of levels up under `Generic PYWR/`).
-3. **▶ Run** solves **29,586 daily timesteps (1920–2000)** with the `glpk-edge`
-   solver in ~25 s; the time bar and per-node charts populate. The run carries
-   one **⚠** note — the model declares `minimum_version 1.31.1` while the
-   bootstrapped pywr is 1.29.0 — but it completes and produces full results.
-4. To use the model's *real* schematic instead of auto-layout, **Open** the
-   `Zone5.tcm` viewer file with the model already loaded — its positions land
-   on 158 of the 162 nodes. **Save** to bake them into the JSON.
-
-Nothing in that folder was modified; the `.xlsx`/`.h5` data stays where it is.
-
 ## Project layout
 
 ```
@@ -290,7 +270,7 @@ PYWR_reader/
 - [x] One-click pywr environment; run with recorders on every node
 - [x] Flow explorer: path highlighting, flow-scaled edges, time slider,
       animation, per-node charts, what-if runs with comparison
-- [x] Verified on a real 80-year, 29,586-timestep model (SEW WRZ5)
+- [x] Verified on a real 80-year, 29,586-timestep zone model (162 nodes)
 - [x] Image tracing mode — trace a network over a map/schematic (New +
       Trace image + Quick place); image kept as a per-model browser overlay or
       a portable `.pywrtrace.json` sidecar beside the model
@@ -305,8 +285,8 @@ PYWR_reader/
       validated before it lands (duplicate names, dangling edges, bad blocks);
       renaming a node rewrites every reference to it
 - [ ] GeoJSON/Shapefile import for geographic networks
-- [ ] Open a submodel together with its inputs file (compose a
-      `wrse_simulator`-style fragment into a runnable model)
+- [ ] Open a submodel together with its inputs file, for model suites that
+      split the network and its parameters across separate files
 
 ## Licence
 

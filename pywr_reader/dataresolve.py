@@ -2,7 +2,7 @@
 
 Real pywr models point `tables`/`parameters`/`recorders` at data files by
 `url` — very often an *absolute path from another machine*
-(`C:\\Data\\...\\SEW_RZ5.xlsx`) that does not exist here. This module finds a
+(`C:\\Data\\...\\inflows.xlsx`) that does not exist here. This module finds a
 local file with the same basename, searching the model's folder and any
 user-supplied data directories, so the model can actually run.
 """
