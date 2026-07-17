@@ -94,13 +94,25 @@ def rename_node(model, old, new):
     if node is None:
         raise ValueError(f"no node named {old!r}")
     node["name"] = new
-    for edge in model.get("edges", []):
-        for i, endpoint in enumerate(edge):
+    return rewrite_node_refs(model, old, new)
+
+
+def rewrite_node_refs(model, old, new):
+    """Point every reference to node `old` at `new` — edges, aggregated node
+    lists, parameters and recorders — without touching any node's own name.
+
+    rename_node() calls this after renaming the node itself. The JSON editor
+    calls it when the rename has *already* happened in hand-edited JSON, so
+    only the references are left dangling. Returns human-readable notes."""
+    notes = []
+    for i, edge in enumerate(model.get("edges", [])):
+        for j, endpoint in enumerate(edge):
             if endpoint == old:
-                edge[i] = new
+                edge[j] = new
+                notes.append(f"updated reference at edges[{i}]")
     # references elsewhere (aggregated nodes, parameters, recorders)
-    warnings = _rewrite_references(model, old, new)
-    return warnings
+    notes.extend(_rewrite_references(model, old, new))
+    return notes
 
 
 def _rewrite_references(model, old, new):

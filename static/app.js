@@ -1196,11 +1196,18 @@ function jsonEditorModal(title, value, hint, onApply) {
   box.focus();
 }
 
-/** Push an edited model to the server; the canvas redraws from the response. */
-async function applyRawModel(model) {
-  updateGraph(await api("/api/model/raw", { model }));
+/** Push an edited model to the server; the canvas redraws from the response.
+ *  renames {old: new} lets the server rewrite references to a node the edit
+ *  renamed, so the edges pointing at it don't come back as dangling. */
+async function applyRawModel(model, renames) {
+  const payload = await api("/api/model/raw", { model, renames });
+  updateGraph(payload);
   closeModal();
-  toast("Model updated — Save to write it to the file");
+  const rewrote = (payload.warnings || []).length;
+  toast(rewrote
+    ? `Model updated — ${rewrote} reference${rewrote > 1 ? "s" : ""} rewritten. `
+      + "Save to write it to the file"
+    : "Model updated — Save to write it to the file");
 }
 
 async function openModelExplorer() {
@@ -1237,10 +1244,10 @@ async function openModelExplorer() {
   }
 
   // --- editing straight from the explorer -------------------------------
-  const patched = fn => {                 // edit a copy, never `raw` itself
+  const patched = (fn, renames) => {      // edit a copy, never `raw` itself
     const next = JSON.parse(JSON.stringify(raw));
     fn(next);
-    return applyRawModel(next);
+    return applyRawModel(next, renames);
   };
   function editEntry(section, name, def) {
     jsonEditorModal(`${section} · ${name}`, def,
@@ -1258,12 +1265,23 @@ async function openModelExplorer() {
   }
   function editNode(node) {
     jsonEditorModal(`node · ${node.name}`, node,
-      "The node's full JSON — type, parameters, position. Renaming here does " +
-      "not rewrite references; use Rename on the Node tab for that.",
-      parsed => patched(next => {
-        const i = next.nodes.findIndex(x => x.name === node.name);
-        next.nodes[i] = parsed;
-      }));
+      "The node's full JSON — type, parameters, position. Change \"name\" and "
+      + "every reference to it (edges, aggregated nodes, parameters, "
+      + "recorders) is rewritten to match.",
+      parsed => {
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("a node must be a JSON object");
+        }
+        if (!parsed.name) throw new Error("a node needs a \"name\"");
+        // a changed name is a rename, not a new node — tell the server so it
+        // can carry the references (and the node's position) across
+        const renames = parsed.name !== node.name
+          ? { [node.name]: parsed.name } : undefined;
+        return patched(next => {
+          const i = next.nodes.findIndex(x => x.name === node.name);
+          next.nodes[i] = parsed;
+        }, renames);
+      });
   }
   const sectionBar = (section, obj) =>
     el("div", { class: "row gap explorer-bar" },

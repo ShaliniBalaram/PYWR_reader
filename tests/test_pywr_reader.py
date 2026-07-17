@@ -388,6 +388,35 @@ class TestScenarios(unittest.TestCase):
                          ["climate", "demand"])
 
 
+class TestRewriteNodeRefs(unittest.TestCase):
+    """rewrite_node_refs points references at a new name WITHOUT renaming any
+    node — for hand-edited JSON, where the rename has already happened.
+    (rename_node, which renames *and* rewrites, is covered in TestGraphOps.)"""
+
+    def test_rewrites_edges_and_references_but_no_names(self):
+        model = tiny_model()
+        # "mid" is referenced by two edges and by the licence's watch list.
+        # Rename it the way a hand edit would: the node only.
+        graphops.node_by_name(model, "mid")["name"] = "NEW"
+        notes = graphops.rewrite_node_refs(model, "mid", "NEW")
+
+        self.assertTrue(notes)
+        self.assertEqual(model["edges"], [["src", "NEW"], ["NEW", "res"],
+                                          ["res", "demand"]])
+        # the virtual storage's watched-node list followed the rename
+        self.assertEqual(graphops.node_by_name(model, "licence")["nodes"],
+                         ["NEW"])
+        # and it renamed nothing else along the way
+        self.assertEqual([n["name"] for n in model["nodes"]],
+                         ["src", "NEW", "res", "demand", "licence"])
+
+    def test_unknown_name_is_a_harmless_no_op(self):
+        model = tiny_model()
+        before = json.loads(json.dumps(model))
+        self.assertEqual(graphops.rewrite_node_refs(model, "ghost", "x"), [])
+        self.assertEqual(model, before)
+
+
 class TestLayoutPicker(unittest.TestCase):
     """The named layouts offered by the picker. A zone model funnels many
     sources into one row, so 'layered' is not always the readable choice."""

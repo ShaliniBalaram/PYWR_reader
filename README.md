@@ -55,7 +55,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-76 tests, using only Python's stdlib `unittest`. Unit + API tests need just
+83 tests, using only Python's stdlib `unittest`. Unit + API tests need just
 Flask; the integration tests that actually execute a model with pywr skip
 themselves automatically until the pywr environment exists.
 
@@ -130,14 +130,21 @@ at three levels:
 canvas immediately; the file on disk changes only when you **Save**. Node
 positions are kept, and anything you add without one is placed automatically.
 
+**Renaming is safe.** Change a node's `"name"` in its JSON and every reference
+follows it — edges, aggregated/virtual node watch-lists, parameters and
+recorders — and the node keeps its place on the canvas. The toast says how many
+references were rewritten. (So the JSON editor now matches **Rename** on the
+Node tab; either is fine.)
+
 Bad edits never reach the canvas. A syntax slip reports the line and column;
 structural mistakes are caught and named — a duplicate node name, an edge
 pointing at a node that isn't there (`edges[0] references unknown node 'X'`),
 a `parameters` block that isn't an object. The message shows under the editor
 and your text stays put, so nothing is lost.
 
-> Renaming a node here does **not** rewrite references to it elsewhere — use
-> **Rename** on the Node tab for that.
+> Renaming in the **whole-model** editor is not tracked — a name that changes
+> there reads as one node removed and another added, which is caught as a
+> dangling edge. Rename from a node's own `{ } edit` and it's rewritten for you.
 
 ## Editing
 
@@ -240,7 +247,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    76 unittest tests (unit + API + integration)
+├── tests/                    83 unittest tests (unit + API + integration)
 ├── examples/gw_network/      small self-contained runnable demo
 ├── examples/scenario_network/  runnable demo with a pywr scenario ensemble
 ├── examples/split_network/   runnable demo with an ambiguous split/junction edge
@@ -269,7 +276,8 @@ PYWR_reader/
 - [x] Layout picker — layered / force-directed / grouped / radial, applied
       instantly with Undo, for models that ship no usable schematic positions
 - [x] Editable JSON — the whole model, a section, or a single parameter/node,
-      validated before it lands (duplicate names, dangling edges, bad blocks)
+      validated before it lands (duplicate names, dangling edges, bad blocks);
+      renaming a node rewrites every reference to it
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file (compose a
       `wrse_simulator`-style fragment into a runnable model)

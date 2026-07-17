@@ -287,11 +287,24 @@ def _validate_model(model):
 @app.post("/api/model/raw")
 def replace_raw_model():
     """Replace the model with hand-edited JSON (the JSON editor's Apply).
-    The file on disk is untouched until Save."""
+    The file on disk is untouched until Save.
+
+    Optional "renames" {old: new} — when the editor sees a node's name change
+    it says so, and the references are rewritten to match before validating
+    (otherwise every edge to that node would look like a dangling one)."""
     body = request.get_json(force=True, silent=True)
     if not isinstance(body, dict) or "model" not in body:
         return _err("expected {\"model\": {…}}")
     model = body["model"]
+    renames = body.get("renames") or {}
+    if not isinstance(renames, dict):
+        return _err("'renames' must be an object of {old: new}")
+    notes = []
+    for old, new in renames.items():
+        if not isinstance(old, str) or not isinstance(new, str) or not new:
+            return _err("'renames' must map a name to a non-empty name")
+        if old != new:
+            notes.extend(graphops.rewrite_node_refs(model, old, new))
     problem = _validate_model(model)
     if problem:
         return _err(problem)
@@ -300,13 +313,16 @@ def replace_raw_model():
         # positions come from the edited JSON where it has them, otherwise
         # keep what's on screen so an unrelated edit doesn't scramble the layout
         positions = dict(STATE["positions"])
+        for old, new in renames.items():
+            if old != new and old in positions:
+                positions[new] = positions.pop(old)   # a rename stays put
         positions.update(model_io.extract_positions(model))
         positions = {n: xy for n, xy in positions.items() if n in set(names)}
         if len(positions) < len(names):
             positions = layout_mod.layout_missing(
                 names, model.get("edges", []), positions)
         STATE.update(model=model, positions=_normalize_positions(positions),
-                     dirty=True, warnings=[])
+                     dirty=True, warnings=notes)
         _resolve_data()
     return jsonify(_graph_payload())
 

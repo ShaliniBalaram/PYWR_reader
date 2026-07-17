@@ -272,6 +272,61 @@ class TestApi(unittest.TestCase):
         # a node with no position in the JSON still gets one
         self.assertIn("Hand_Added", app_module.STATE["positions"])
 
+    def test_raw_edit_rename_rewrites_references(self):
+        raw = self._raw()
+        old = raw["edges"][0][0]
+        new = old + "_renamed"
+        for node in raw["nodes"]:
+            if node["name"] == old:
+                node["name"] = new        # rename the node only, as a hand edit
+        res = self.c.post("/api/model/raw",
+                          json={"model": raw, "renames": {old: new}})
+        self.assertEqual(res.status_code, 200, res.get_json())
+        model = app_module.STATE["model"]
+        # no edge still points at the old name
+        self.assertFalse(any(old in e for e in model["edges"]))
+        self.assertTrue(any(new in e for e in model["edges"]))
+        # and the rewrite is reported back
+        self.assertTrue(res.get_json()["warnings"])
+
+    def test_raw_edit_rename_keeps_the_node_where_it_was(self):
+        self._open_example()
+        raw = self.c.get("/api/model/raw").get_json()
+        old = raw["nodes"][0]["name"]
+        new = "Moved_Check"
+        was = list(app_module.STATE["positions"][old])
+        raw["nodes"][0]["name"] = new
+        raw["nodes"][0].pop("position", None)   # position only in app state
+        self.c.post("/api/model/raw", json={"model": raw,
+                                            "renames": {old: new}})
+        # the renamed node keeps its spot instead of being re-placed
+        self.assertNotIn(old, app_module.STATE["positions"])
+        self.assertEqual(app_module.STATE["positions"][new], was)
+
+    def test_raw_edit_rename_onto_an_existing_name_is_rejected(self):
+        raw = self._raw()
+        old, clash = raw["nodes"][0]["name"], raw["nodes"][1]["name"]
+        raw["nodes"][0]["name"] = clash
+        res = self.c.post("/api/model/raw",
+                          json={"model": raw, "renames": {old: clash}})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("duplicate", res.get_json()["error"])
+
+    def test_raw_edit_rejects_bad_renames(self):
+        raw = self._raw()
+        for bad in (["a"], "a", {"a": ""}, {"a": 3}):
+            res = self.c.post("/api/model/raw",
+                              json={"model": raw, "renames": bad})
+            self.assertEqual(res.status_code, 400, bad)
+
+    def test_raw_edit_treats_an_empty_renames_as_none(self):
+        # falsy values just mean "nothing was renamed" — not an error
+        raw = self._raw()
+        for empty in (None, {}, []):
+            res = self.c.post("/api/model/raw",
+                              json={"model": raw, "renames": empty})
+            self.assertEqual(res.status_code, 200, empty)
+
     def test_raw_edit_rejects_bad_models(self):
         raw = self._raw()
         cases = [
