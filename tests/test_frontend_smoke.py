@@ -199,6 +199,44 @@ class TestFrontendSmoke(unittest.TestCase):
         self.assertIn("Add", self.page.inner_text("#btn-add"))
         self.assertNoConsoleErrors()
 
+    # -- the Open dialog ------------------------------------------------
+    CRUMB = "#modal .mono.muted.small"
+
+    def _open_dialog(self):
+        """Open it and wait for the *listing* — the dialog paints a 'loading…'
+        row of class .entry first, so waiting on .entry alone races the fetch.
+        The crumb only gets text once browse() has come back."""
+        self.page.click("#btn-open")
+        self.page.wait_for_function(
+            "sel => { const c = document.querySelector(sel);"
+            "  return c && c.textContent.length > 0; }", arg=self.CRUMB)
+
+    def test_open_dialog_takes_its_roots_from_the_server(self):
+        # the shortcuts must be whatever the server's platform offers —
+        # a hard-coded "Volumes" button left Windows unable to reach a drive
+        self._open_dialog()
+        expected = [r["label"] for r in app_module._browse_roots()]
+        shown = self.page.evaluate(
+            "() => [...document.querySelectorAll('#modal .row.gap button')]"
+            ".map(b => b.textContent)")
+        for label in expected:
+            self.assertIn(label, shown)
+        self.assertNoConsoleErrors()
+
+    def test_open_dialog_navigates_using_the_server_path(self):
+        self._open_dialog()
+        crumb = self.CRUMB
+        before = self.page.inner_text(crumb)
+        self.page.click(".browser-list .entry:not(:has-text('..')):has-text('📁')")
+        self.page.wait_for_function(
+            "b => document.querySelector('#modal .mono.muted.small')"
+            ".textContent !== b", arg=before)
+        # it moved somewhere below where it started, with no "/" spliced in
+        after = self.page.inner_text(crumb)
+        self.assertTrue(after.startswith(before), f"{before} -> {after}")
+        self.assertNotIn("//", after)
+        self.assertNoConsoleErrors()
+
     # -- JSON editing ---------------------------------------------------
     def test_json_editor_round_trips_an_edit(self):
         self.page.evaluate("openModelExplorer()")

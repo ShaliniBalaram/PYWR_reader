@@ -16,12 +16,24 @@ with pywr, then scrub through time watching flows move through every edge.
 
 ## Quick start
 
+**macOS / Linux**
+
 ```bash
 cd PYWR_reader
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt   # just Flask
 ./.venv/bin/python app.py
 # → open http://127.0.0.1:5321 in a browser
+```
+
+**Windows** (PowerShell or Command Prompt)
+
+```bat
+cd PYWR_reader
+py -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python app.py
+REM → open http://127.0.0.1:5321 in a browser
 ```
 
 Try it immediately: **Open** → `examples/gw_network/pywr_model.json` — a small
@@ -56,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**92 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**101 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -244,7 +256,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    92 unittest tests
+├── tests/                    101 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)

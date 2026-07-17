@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -226,6 +227,69 @@ class TestApi(unittest.TestCase):
         data = self._open_example().get_json()
         self.assertEqual(data["n_combinations"], 1)
         self.assertEqual(data["scenario_dims"], [])
+
+    # -- the Open dialog's file browser, on every platform -----------------
+    def test_browse_lists_dirs_and_models_with_full_paths(self):
+        tmp = tempfile.mkdtemp()
+        os.mkdir(os.path.join(tmp, "sub"))
+        for name in ("m.json", "v.tcm", "nodes.csv", "notes.txt"):
+            open(os.path.join(tmp, name), "w").close()
+        data = self.c.get("/api/browse?path=" + tmp).get_json()
+        self.assertTrue(data["ok"])
+        names = [e["name"] for e in data["entries"]]
+        self.assertIn("sub", names)
+        self.assertIn("m.json", names)
+        self.assertNotIn("notes.txt", names)      # only openable types
+        # every entry carries a server-joined path, so the browser never has
+        # to guess the separator (a "/" join breaks on Windows)
+        for entry in data["entries"]:
+            self.assertEqual(entry["path"], os.path.join(tmp, entry["name"]))
+
+    def test_browse_offers_roots_for_this_platform(self):
+        data = self.c.get("/api/browse").get_json()
+        self.assertTrue(data["roots"], "no roots offered")
+        for root in data["roots"]:
+            self.assertTrue(root["label"] and root["path"], root)
+            self.assertTrue(os.path.isdir(root["path"]), root)
+        self.assertEqual(data["roots"][0]["label"], "Home")
+
+    def test_browse_roots_on_windows_are_the_drives(self):
+        # can't run this on Windows here, so pin the behaviour by simulating it:
+        # Windows must be offered its drives, never a hard-coded /Volumes
+        drives = {"C:\\", "D:\\"}
+        with mock.patch.object(app_module.os, "name", "nt"), \
+             mock.patch.object(app_module.os.path, "isdir",
+                               side_effect=lambda p: p in drives):
+            roots = app_module._browse_roots()
+        labels = [r["label"] for r in roots]
+        self.assertEqual(labels[0], "Home")
+        self.assertIn("C:\\", labels)
+        self.assertIn("D:\\", labels)
+        self.assertNotIn("Volumes", labels)
+
+    def test_browse_roots_on_mac_include_volumes(self):
+        with mock.patch.object(app_module.os, "name", "posix"), \
+             mock.patch.object(app_module.os.path, "isdir",
+                               side_effect=lambda p: p == "/Volumes"):
+            roots = app_module._browse_roots()
+        labels = [r["label"] for r in roots]
+        self.assertIn("Volumes", labels)
+        self.assertNotIn("C:\\", labels)
+
+    def test_browse_has_no_parent_at_a_filesystem_root(self):
+        # dirname("/") is "/" — a ".." there would just loop
+        root = os.path.abspath(os.sep)
+        self.assertIsNone(self.c.get("/api/browse?path=" + root)
+                          .get_json()["parent"])
+
+    def test_browse_expands_a_tilde(self):
+        data = self.c.get("/api/browse?path=~").get_json()
+        self.assertEqual(data["path"], os.path.expanduser("~"))
+
+    def test_browse_rejects_a_non_directory(self):
+        r = self.c.get("/api/browse?path=" + EXAMPLE)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not a directory", r.get_json()["error"])
 
     def _raw(self):
         self._open_example()

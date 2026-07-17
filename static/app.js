@@ -749,22 +749,32 @@ async function refreshGraph() {
 function openFileModal() {
   let curPath = null;
   const pathbox = el("input", { class: "pathbox mono", type: "text",
-    placeholder: "/path/to/model.json | .tcm | nodes.csv" });
+    placeholder: "full path to a model .json, .tcm or nodes.csv" });
   const list = el("div", { class: "browser-list" }, el("div", { class: "entry" }, "loading…"));
   const crumbs = el("div", { class: "mono muted small" });
+  const rootsRow = el("div", { class: "row gap" });   // filled by the server
 
   async function browse(dir) {
     try {
       const data = await api("/api/browse?path=" + encodeURIComponent(dir));
       curPath = data.path;
       crumbs.textContent = data.path;
+      // the server names the shortcuts for its own platform — drive letters on
+      // Windows, /Volumes on a Mac — so nothing here has to guess
+      rootsRow.replaceChildren(...(data.roots || []).map(root =>
+        el("button", { class: "tiny", onclick: () => browse(root.path) },
+          root.label)));
       list.replaceChildren(
-        el("div", { class: "entry", onclick: () => browse(data.parent) }, "📁 .."),
+        // no ".." at a filesystem root
+        ...(data.parent
+          ? [el("div", { class: "entry", onclick: () => browse(data.parent) },
+              "📁 ..")] : []),
         ...data.entries.map(entry => el("div", {
           class: "entry",
+          // entry.path is joined server-side, with that platform's separator
           onclick: () => {
-            if (entry.kind === "dir") browse(data.path + "/" + entry.name);
-            else pathbox.value = data.path + "/" + entry.name;
+            if (entry.kind === "dir") browse(entry.path);
+            else pathbox.value = entry.path;
           },
           ondblclick: () => { if (entry.kind !== "dir") doOpen(); },
         },
@@ -799,10 +809,7 @@ function openFileModal() {
 
   openModal(
     el("h3", {}, "Open model"),
-    el("div", { class: "row gap" },
-      el("button", { class: "tiny", onclick: () => browse("~") }, "Home"),
-      el("button", { class: "tiny", onclick: () => browse("/Volumes") }, "Volumes"),
-      crumbs),
+    el("div", { class: "row gap" }, rootsRow, crumbs),
     list,
     pathbox,
     el("div", { class: "row gap", style: "margin-top:10px; justify-content:flex-end" },
@@ -1440,21 +1447,27 @@ function pickDataDir() {
   let curPath = null;
   const crumbs = el("div", { class: "mono muted small" });
   const list = el("div", { class: "browser-list" });
+  const rootsRow = el("div", { class: "row gap" });   // filled by the server
   async function browse(dir) {
     const data = await api("/api/browse?path=" + encodeURIComponent(dir));
     curPath = data.path;
     crumbs.textContent = data.path;
+    rootsRow.replaceChildren(...(data.roots || []).map(root =>
+      el("button", { class: "tiny", onclick: () => browse(root.path) },
+        root.label)));
     list.replaceChildren(
-      el("div", { class: "entry", onclick: () => browse(data.parent) }, "📁 .."),
+      ...(data.parent
+        ? [el("div", { class: "entry", onclick: () => browse(data.parent) },
+            "📁 ..")] : []),
       ...data.entries.filter(e => e.kind === "dir").map(entry =>
-        el("div", { class: "entry", onclick: () => browse(data.path + "/" + entry.name) },
+        el("div", { class: "entry", onclick: () => browse(entry.path) },
           "📁 " + entry.name)));
   }
   openModal(
     el("h3", {}, "Add a folder to search for data files"),
     el("p", { class: "muted small" },
       "Pick the folder (or a parent of it) that contains the model’s .xlsx / .csv / .h5 data."),
-    crumbs, list,
+    el("div", { class: "row gap" }, rootsRow, crumbs), list,
     el("div", { class: "row gap", style: "justify-content:flex-end;margin-top:10px" },
       el("button", { onclick: closeModal }, "Cancel"),
       el("button", { class: "primary", onclick: async () => {

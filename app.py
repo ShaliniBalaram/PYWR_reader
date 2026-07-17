@@ -7,6 +7,7 @@ import base64
 import binascii
 import json
 import os
+import string
 import subprocess
 import tempfile
 import threading
@@ -123,10 +124,30 @@ def index():
 # ---------------------------------------------------------------------------
 # File browsing / open / save
 # ---------------------------------------------------------------------------
+def _browse_roots():
+    """Shortcuts for the Open dialog, named for the platform you're on:
+    the drives on Windows, /Volumes on macOS, the usual mount points on Linux.
+    Returned to the browser so it never has to guess — hard-coding "/Volumes"
+    left Windows with no way to reach D: at all."""
+    roots = [{"label": "Home", "path": os.path.expanduser("~")}]
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.isdir(drive):
+                roots.append({"label": drive, "path": drive})
+    else:
+        for path, label in (("/Volumes", "Volumes"),      # macOS
+                            ("/media", "Media"),          # Linux removable
+                            ("/mnt", "Mounts")):          # Linux mounts
+            if os.path.isdir(path):
+                roots.append({"label": label, "path": path})
+    return roots
+
+
 @app.get("/api/browse")
 def browse():
     path = request.args.get("path") or os.path.expanduser("~")
-    path = os.path.abspath(path)
+    path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isdir(path):
         return _err(f"not a directory: {path}")
     entries = []
@@ -134,21 +155,28 @@ def browse():
         for name in sorted(os.listdir(path), key=str.lower):
             if name.startswith((".", "._")):
                 continue
-            full = os.path.join(path, name)
-            if os.path.isdir(full):
-                entries.append({"name": name, "kind": "dir"})
+            full = os.path.join(path, name)      # os.path.join, not "/" —
+            try:                                 # Windows wants a backslash
+                is_dir = os.path.isdir(full)
+            except OSError:                      # unreadable mount, skip it
+                continue
+            if is_dir:
+                entries.append({"name": name, "kind": "dir", "path": full})
             elif os.path.splitext(name)[1].lower() in (".json", ".tcm", ".csv"):
                 try:
                     size = os.path.getsize(full)
                 except OSError:
                     size = 0
-                entries.append({"name": name, "kind": "file", "size": size})
+                entries.append({"name": name, "kind": "file", "size": size,
+                                "path": full})
     except PermissionError:
         return _err("permission denied", 403)
-    roots = [os.path.expanduser("~"), "/Volumes"]
+    parent = os.path.dirname(path)
     return jsonify({"ok": True, "path": path,
-                    "parent": os.path.dirname(path), "entries": entries,
-                    "roots": [r for r in roots if os.path.isdir(r)]})
+                    # at a filesystem root ("C:\\", "/") dirname is itself:
+                    # say so, rather than offer a ".." that goes nowhere
+                    "parent": parent if parent != path else None,
+                    "entries": entries, "roots": _browse_roots()})
 
 
 @app.post("/api/open")
