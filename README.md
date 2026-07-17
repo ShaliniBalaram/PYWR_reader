@@ -55,7 +55,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-71 tests, using only Python's stdlib `unittest`. Unit + API tests need just
+76 tests, using only Python's stdlib `unittest`. Unit + API tests need just
 Flask; the integration tests that actually execute a model with pywr skip
 themselves automatically until the pywr environment exists.
 
@@ -113,7 +113,31 @@ remapped only for the run.
   edges, parameters, tables and recorders, each row summarised (a parameter
   shows its type and key fields, e.g. `constant · = 150` or
   `MonthlyProfile · table:GW PDO profile`) and expandable to full JSON. Click a
-  node row to jump to it on the canvas. (Raw JSON is still one click away.)
+  node row to jump to it on the canvas.
+
+## Editing the JSON directly
+
+When the forms get in the way, edit the JSON itself — the explorer is editable
+at three levels:
+
+| Where | What it edits |
+|---|---|
+| **{ } edit JSON** (top right of the explorer) | The **whole model** — every section at once. |
+| **{ } edit all parameters** (and tables / recorders) | One whole block: add, rename or remove entries. |
+| **{ } edit** on any row | A single **parameter**, table, recorder — or a **node**'s full JSON, from the Nodes list. |
+
+**Apply** parses your JSON and updates the model in memory, redrawing the
+canvas immediately; the file on disk changes only when you **Save**. Node
+positions are kept, and anything you add without one is placed automatically.
+
+Bad edits never reach the canvas. A syntax slip reports the line and column;
+structural mistakes are caught and named — a duplicate node name, an edge
+pointing at a node that isn't there (`edges[0] references unknown node 'X'`),
+a `parameters` block that isn't an object. The message shows under the editor
+and your text stays put, so nothing is lost.
+
+> Renaming a node here does **not** rewrite references to it elsewhere — use
+> **Rename** on the Node tab for that.
 
 ## Editing
 
@@ -125,6 +149,8 @@ remapped only for the run.
   edit/add/remove parameters (values are JSON — numbers or `{…}` parameter
   definitions), delete nodes/edges (with warnings if something still
   references them).
+- Prefer raw JSON? See [Editing the JSON directly](#editing-the-json-directly)
+  — the whole model, a whole `parameters` block, or one entry at a time.
 - **Export CSV pair** writes Graph-Overlay-compatible `nodes.csv` +
   `nodes_edges.csv`.
 
@@ -214,7 +240,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    71 unittest tests (unit + API + integration)
+├── tests/                    76 unittest tests (unit + API + integration)
 ├── examples/gw_network/      small self-contained runnable demo
 ├── examples/scenario_network/  runnable demo with a pywr scenario ensemble
 ├── examples/split_network/   runnable demo with an ambiguous split/junction edge
@@ -242,6 +268,8 @@ PYWR_reader/
       spliced onto ambiguous edges so pywr records their exact flow
 - [x] Layout picker — layered / force-directed / grouped / radial, applied
       instantly with Undo, for models that ship no usable schematic positions
+- [x] Editable JSON — the whole model, a section, or a single parameter/node,
+      validated before it lands (duplicate names, dangling edges, bad blocks)
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file (compose a
       `wrse_simulator`-style fragment into a runnable model)

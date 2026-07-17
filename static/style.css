@@ -48,6 +48,26 @@ body {
 .brand { font-weight: 700; color: var(--ink); margin-right: 10px; }
 .sep { width: 1px; height: 20px; background: var(--baseline); margin: 0 4px; }
 
+/* JSON editor */
+.json-edit {
+  width: 100%; min-height: 46vh; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.5;
+  tab-size: 2; white-space: pre; overflow-wrap: normal; overflow-x: auto;
+  color: var(--ink-2); background: var(--page);
+  border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px;
+}
+.json-edit:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.json-err {
+  margin-top: 8px; padding: 7px 10px;
+  color: #e66767; background: #3a1717;
+  border: 1px solid var(--critical); border-radius: 6px;
+  font-size: 12px; white-space: pre-wrap;
+}
+.json-err.hidden { display: none; }
+.row-edit { margin-left: auto; }
+.explorer-bar { margin-bottom: 9px; align-items: center; }
+
 /* toolbar dropdowns (Layout ▾, + Add ▾) */
 .menu-wrap { position: relative; display: inline-flex; }
 .menu {
@@ -300,8 +320,18 @@ table.grid td.mono { font-family: ui-monospace, Menlo, monospace; font-size: 11p
 .pill-type { display: inline-block; padding: 0 6px; border-radius: 4px;
   background: var(--surface-2); border: 1px solid var(--border); font-size: 11px; }
 .explorer-body details { border-bottom: 1px solid var(--grid); padding: 5px 0; }
-.explorer-body summary { cursor: pointer; color: var(--ink-2); }
-.explorer-body summary .pill-type { margin-left: 6px; }
+.explorer-body summary {
+  cursor: pointer; color: var(--ink-2);
+  display: flex; align-items: center; gap: 6px;
+}
+.explorer-body summary::marker { content: ""; }
+.explorer-body summary::before {
+  content: "▸"; color: var(--muted); font-size: 10px; width: 9px;
+}
+.explorer-body details[open] > summary::before { content: "▾"; }
+.explorer-body summary .pill-type {
+  margin-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .explorer-body details pre { background: var(--page); border: 1px solid var(--grid);
   border-radius: 6px; padding: 8px; font-size: 11px; overflow: auto;
   white-space: pre-wrap; margin: 6px 0 2px; }

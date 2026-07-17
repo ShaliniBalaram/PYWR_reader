@@ -251,6 +251,66 @@ def raw_model():
     return jsonify(model)
 
 
+def _validate_model(model):
+    """Cheap structural checks on hand-edited JSON, so a typo comes back as a
+    clear message instead of a broken canvas or a crash deep inside pywr.
+    Returns an error string, or None when the model looks sane."""
+    if not isinstance(model, dict):
+        return "the model must be a JSON object"
+    if not isinstance(model.get("nodes"), list):
+        return "no 'nodes' list — this is not a pywr model"
+    if not isinstance(model.get("edges", []), list):
+        return "'edges' must be a list"
+    names = []
+    for i, node in enumerate(model["nodes"]):
+        if not isinstance(node, dict):
+            return f"nodes[{i}] must be an object"
+        if not node.get("name"):
+            return f"nodes[{i}] has no 'name'"
+        names.append(node["name"])
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        return f"duplicate node name(s): {', '.join(dupes)}"
+    known = set(names)
+    for i, edge in enumerate(model.get("edges", [])):
+        if not isinstance(edge, list) or len(edge) < 2:
+            return f"edges[{i}] must be [source, destination, …]"
+        for end in edge[:2]:
+            if end not in known:
+                return f"edges[{i}] references unknown node {end!r}"
+    for section in ("parameters", "tables", "recorders"):
+        if section in model and not isinstance(model[section], dict):
+            return f"'{section}' must be a JSON object"
+    return None
+
+
+@app.post("/api/model/raw")
+def replace_raw_model():
+    """Replace the model with hand-edited JSON (the JSON editor's Apply).
+    The file on disk is untouched until Save."""
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict) or "model" not in body:
+        return _err("expected {\"model\": {…}}")
+    model = body["model"]
+    problem = _validate_model(model)
+    if problem:
+        return _err(problem)
+    with LOCK:
+        names = [n["name"] for n in model["nodes"]]
+        # positions come from the edited JSON where it has them, otherwise
+        # keep what's on screen so an unrelated edit doesn't scramble the layout
+        positions = dict(STATE["positions"])
+        positions.update(model_io.extract_positions(model))
+        positions = {n: xy for n, xy in positions.items() if n in set(names)}
+        if len(positions) < len(names):
+            positions = layout_mod.layout_missing(
+                names, model.get("edges", []), positions)
+        STATE.update(model=model, positions=_normalize_positions(positions),
+                     dirty=True, warnings=[])
+        _resolve_data()
+    return jsonify(_graph_payload())
+
+
 @app.post("/api/save")
 def save_model():
     body = request.get_json(force=True)

@@ -239,6 +239,61 @@ class TestApi(unittest.TestCase):
         self.assertEqual(data["n_combinations"], 1)
         self.assertEqual(data["scenario_dims"], [])
 
+    def _raw(self):
+        self._open_example()
+        return self.c.get("/api/model/raw").get_json()
+
+    def test_raw_edit_applies_a_parameter_change(self):
+        raw = self._raw()
+        raw.setdefault("parameters", {})["hand_written"] = {"type": "constant",
+                                                            "value": 42}
+        res = self.c.post("/api/model/raw", json={"model": raw})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["n_parameters"],
+                         len(raw["parameters"]))
+        # it landed in the live model, and the file is now dirty (not written)
+        self.assertIn("hand_written", app_module.STATE["model"]["parameters"])
+        self.assertTrue(res.get_json()["dirty"])
+
+    def test_raw_edit_keeps_existing_positions(self):
+        self._open_example()
+        before = dict(app_module.STATE["positions"])
+        raw = self.c.get("/api/model/raw").get_json()
+        raw["metadata"]["title"] = "renamed"
+        self.c.post("/api/model/raw", json={"model": raw})
+        self.assertEqual(app_module.STATE["positions"], before)
+
+    def test_raw_edit_places_a_newly_added_node(self):
+        raw = self._raw()
+        raw["nodes"].append({"name": "Hand_Added", "type": "link"})
+        raw["edges"].append(["Hand_Added", raw["nodes"][0]["name"]])
+        res = self.c.post("/api/model/raw", json={"model": raw})
+        self.assertEqual(res.status_code, 200)
+        # a node with no position in the JSON still gets one
+        self.assertIn("Hand_Added", app_module.STATE["positions"])
+
+    def test_raw_edit_rejects_bad_models(self):
+        raw = self._raw()
+        cases = [
+            ({"nodes": "nope"}, "nodes"),
+            ({"nodes": [{"type": "link"}]}, "name"),
+            ({"nodes": [{"name": "a"}, {"name": "a"}]}, "duplicate"),
+            ({"nodes": [{"name": "a"}], "edges": [["a", "ghost"]]}, "ghost"),
+            ({"nodes": [{"name": "a"}], "parameters": []}, "parameters"),
+        ]
+        for model, expect in cases:
+            res = self.c.post("/api/model/raw", json={"model": model})
+            self.assertEqual(res.status_code, 400, model)
+            self.assertIn(expect, res.get_json()["error"], model)
+        # a rejected edit leaves the loaded model untouched
+        self.assertEqual(len(app_module.STATE["model"]["nodes"]),
+                         len(raw["nodes"]))
+
+    def test_raw_edit_needs_a_model_key(self):
+        self._open_example()
+        res = self.c.post("/api/model/raw", json={"nodes": []})
+        self.assertEqual(res.status_code, 400)
+
     def test_layouts_endpoint_lists_the_picker_options(self):
         data = self.c.get("/api/layouts").get_json()
         self.assertTrue(data["ok"])
