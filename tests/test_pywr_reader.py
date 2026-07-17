@@ -16,7 +16,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pywr_reader import dataresolve, graphops, layout, model_io  # noqa: E402
+from pywr_reader import dataresolve, dataview, graphops, layout  # noqa: E402
+from pywr_reader import model_io  # noqa: E402
 from pywr_reader import runner  # noqa: E402
 
 
@@ -386,6 +387,48 @@ class TestScenarios(unittest.TestCase):
         self.assertEqual(summary["n_combinations"], 6)
         self.assertEqual([d["name"] for d in summary["scenario_dims"]],
                          ["climate", "demand"])
+
+
+class TestDataViewPureFns(unittest.TestCase):
+    """dataview's pure helpers. The readers themselves need pandas/PyTables
+    and are exercised by the integration test against a real file."""
+
+    def test_cell_makes_values_json_safe(self):
+        self.assertEqual(dataview._cell("text"), "text")
+        self.assertEqual(dataview._cell(3.0), 3)          # whole float -> int
+        self.assertEqual(dataview._cell(1.23456789), 1.234568)
+        self.assertIsNone(dataview._cell(float("nan")))   # json can't take NaN
+        self.assertIsNone(dataview._cell(float("inf")))
+        self.assertIsNone(dataview._cell(None))
+        self.assertIs(dataview._cell(True), True)
+
+    def test_storer_rows_reads_fixed_format_shape(self):
+        # the trap: a fixed-format store HAS .nrows, and it is None — the
+        # length is in .shape. Missing it made the viewer report its own page
+        # size as the file's row count.
+        class FrameFixed:      # [rows, cols]
+            nrows, shape = None, [35042, 38]
+
+        class SeriesFixed:     # a bare length
+            nrows, shape = None, 5480
+
+        class Table:           # table format carries nrows
+            nrows, shape = 731, None
+
+        self.assertEqual(dataview._storer_rows(FrameFixed()), 35042)
+        self.assertEqual(dataview._storer_rows(SeriesFixed()), 5480)
+        self.assertEqual(dataview._storer_rows(Table()), 731)
+
+    def test_storer_rows_gives_up_quietly(self):
+        class Odd:
+            nrows, shape = None, None
+        self.assertIsNone(dataview._storer_rows(Odd()))
+        self.assertIsNone(dataview._storer_rows(object()))
+
+    def test_inspect_rejects_a_type_it_cannot_read(self):
+        with self.assertRaises(ValueError) as ctx:
+            dataview.inspect("/some/model.json")
+        self.assertIn("json", str(ctx.exception))
 
 
 class TestRewriteNodeRefs(unittest.TestCase):

@@ -228,6 +228,30 @@ class TestApi(unittest.TestCase):
         self.assertEqual(data["n_combinations"], 1)
         self.assertEqual(data["scenario_dims"], [])
 
+    def test_data_preview_only_serves_this_models_data_files(self):
+        # not an arbitrary file reader: only what the open model references
+        self._open_example()
+        r = self.c.get("/api/data/preview?path=/etc/passwd")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("not one of this model", r.get_json()["error"])
+
+    def test_data_preview_refuses_before_a_model_is_open(self):
+        r = self.c.get("/api/data/preview?path=/anything.h5")
+        self.assertEqual(r.status_code, 403)
+
+    def test_data_preview_allows_a_referenced_file(self):
+        # params.csv sits beside the example and is referenced by it, so it
+        # passes the allow-list — it then needs the pywr env to actually read
+        self._open_example()
+        resolved = [i["resolved"] for i in
+                    self.c.get("/api/data").get_json()["report"]]
+        self.assertTrue(resolved, "example should reference a data file")
+        r = self.c.get("/api/data/preview?path=" + resolved[0])
+        # allowed through: either it read it, or it said pywr isn't set up —
+        # never the 403 refusal
+        self.assertIn(r.status_code, (200, 409, 400))
+        self.assertNotEqual(r.status_code, 403)
+
     # -- getting results out ----------------------------------------------
     def _fake_run(self, label="run 1"):
         """A finished run in memory, without needing pywr."""

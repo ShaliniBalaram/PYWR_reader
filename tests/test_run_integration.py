@@ -94,5 +94,71 @@ class TestExactEdges(unittest.TestCase):
         self.assertEqual(res["exact_edges"], {})
 
 
+@unittest.skipUnless(ENV_READY, "pywr environment not set up")
+class TestDataView(unittest.TestCase):
+    """dataview runs inside the pywr environment (pandas/PyTables live there),
+    so like the runner it is driven as a subprocess."""
+
+    def _view(self, path, key=None):
+        out = os.path.join(tempfile.mkdtemp(), "view.json")
+        cmd = [envsetup.env_python(),
+               os.path.join(ROOT, "pywr_reader", "dataview.py"), path, out]
+        if key:
+            cmd.append(key)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        with open(out) as fh:
+            return json.load(fh)
+
+    def _make_h5(self, fmt):
+        """A timeseries h5 written by pandas, in the given format."""
+        tmp = os.path.join(tempfile.mkdtemp(), f"{fmt}.h5")
+        script = (
+            "import pandas as pd, numpy as np\n"
+            f"idx = pd.date_range('1920-01-01', periods=1000, freq='D')\n"
+            "df = pd.DataFrame({'river': np.arange(1000.0),"
+            " 'gw': np.arange(1000.0)}, index=idx)\n"
+            f"df.to_hdf(r'{tmp}', key='flows', format='{fmt}')\n")
+        subprocess.run([envsetup.env_python(), "-c", script],
+                       capture_output=True, text=True, timeout=300)
+        return tmp
+
+    def test_reads_a_fixed_format_h5_and_reports_its_real_length(self):
+        # the trap this caught on a real file: a fixed-format store's .nrows
+        # is None, and the length is in .shape — without that the viewer
+        # reports its own page size as the file's row count
+        res = self._view(self._make_h5("fixed"), "/flows")
+        self.assertTrue(res["ok"], res.get("error"))
+        self.assertEqual([k["key"] for k in res["keys"]], ["/flows"])
+        self.assertEqual(res["keys"][0]["rows"], 1000)
+        preview = res["preview"]
+        self.assertEqual(preview["n_rows"], 1000)     # not 200, the page size
+        self.assertTrue(preview["truncated"])
+        self.assertEqual(len(preview["rows"]), 200)   # only the head is read
+        self.assertEqual(preview["columns"], ["river", "gw"])
+        self.assertTrue(preview["index"][0].startswith("1920-01-01"))
+
+    def test_reads_a_table_format_h5(self):
+        res = self._view(self._make_h5("table"), "/flows")
+        self.assertTrue(res["ok"], res.get("error"))
+        self.assertEqual(res["preview"]["n_rows"], 1000)
+
+    def test_a_single_key_previews_without_being_asked(self):
+        res = self._view(self._make_h5("fixed"))
+        self.assertEqual(res["key"], "/flows")
+        self.assertIn("preview", res)
+
+    def test_reads_a_csv(self):
+        res = self._view(os.path.join(ROOT, "examples", "gw_network",
+                                      "params.csv"))
+        self.assertTrue(res["ok"], res.get("error"))
+        self.assertEqual(res["kind"], "csv")
+        self.assertGreater(res["preview"]["n_cols"], 1)
+
+    def test_reports_an_unreadable_file_rather_than_crashing(self):
+        res = self._view(EXAMPLE)          # a .json model, not data
+        self.assertFalse(res["ok"])
+        self.assertIn("json", res["error"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

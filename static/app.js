@@ -1395,6 +1395,81 @@ async function openModelExplorer() {
   renderBody();
 }
 
+/** Look inside a data file. h5/xlsx are read by pandas out in the pywr
+ *  environment, so this needs pywr set up — the error says so if it isn't. */
+async function dataViewer(path, basename) {
+  const filter = el("input", { class: "explorer-filter", type: "text",
+    placeholder: "Filter keys…" });
+  const keyList = el("div", { class: "browser-list" });
+  const keyPane = el("div", { class: "dv-keys" }, filter, keyList);
+  const body = el("div", { class: "dv-body" },
+    el("p", { class: "muted small" }, "reading…"));
+  let keys = [], current = null;
+
+  const renderKeys = () => {
+    const q = filter.value.trim().toLowerCase();
+    const hits = keys.filter(k => !q || k.key.toLowerCase().includes(q));
+    keyPane.classList.toggle("hidden", !keys.length);
+    keyList.replaceChildren(...(hits.length
+      ? hits.slice(0, 600).map(k => el("div", {
+          class: "entry" + (k.key === current ? " sel" : ""),
+          title: k.key + (k.dtype ? ` · ${k.dtype}` : ""),
+          onclick: () => load(k.key),
+        }, k.key,
+          k.rows != null ? el("span", { class: "sz" }, k.rows + " rows") : null))
+      : [el("div", { class: "entry muted" }, "no keys match")]));
+  };
+
+  const renderPreview = data => {
+    const p = data.preview;
+    const parts = [];
+    if (data.note) parts.push(el("p", { class: "muted small" }, data.note));
+    if (!p) {
+      parts.push(el("p", { class: "muted small" },
+        keys.length ? "Pick a key on the left to see its values."
+                    : "Nothing to preview in this file."));
+      body.replaceChildren(...parts);
+      return;
+    }
+    const table = el("table", { class: "grid dv-table" },
+      el("tr", {}, el("th", {}, ""), ...p.columns.map(c => el("th", {}, c))),
+      ...p.rows.map((row, i) => el("tr", {},
+        el("td", { class: "k" }, p.index[i]),
+        ...row.map(v => el("td", { class: "mono" },
+          v === null ? "—" : String(v))))));
+    parts.push(el("p", { class: "muted small" },
+      `${p.n_rows != null ? p.n_rows.toLocaleString() : "?"} rows × ${p.n_cols} `
+      + (p.truncated ? `— first ${p.rows.length} shown` : "")),
+      el("div", { class: "dv-scroll" }, table));
+    body.replaceChildren(...parts);
+  };
+
+  async function load(key) {
+    current = key || null;
+    renderKeys();
+    body.replaceChildren(el("p", { class: "muted small" }, "reading…"));
+    try {
+      const data = await api("/api/data/preview?path=" + encodeURIComponent(path)
+        + (key ? "&key=" + encodeURIComponent(key) : ""));
+      keys = data.keys || [];
+      if (data.key) current = data.key;
+      renderKeys();
+      renderPreview(data);
+    } catch (err) {
+      body.replaceChildren(el("div", { class: "json-err" }, err.message));
+    }
+  }
+
+  openModal(
+    el("h3", {}, basename),
+    el("div", { class: "dv-wrap" }, keyPane, body),
+    el("div", { class: "row gap", style: "margin-top:10px;justify-content:flex-end" },
+      el("button", { onclick: closeModal }, "Close")));
+  $("modal").classList.add("explorer");
+  filter.addEventListener("input", renderKeys);
+  load(null);
+}
+
 function dataFilesBlock(data) {
   const block = el("div", { class: "pane-block" }, el("h3", {}, "Data files"));
   const report = (data && data.report) || [];
@@ -1417,7 +1492,11 @@ function dataFilesBlock(data) {
       el("td", {},
         el("span", { class: "status " + (ok ? "done" : "failed"),
           title: item.resolved || "not found" },
-          ok ? "✓ " + (item.source || "found") : "✗ missing"))));
+          ok ? "✓ " + (item.source || "found") : "✗ missing")),
+      el("td", {}, ok ? el("button", {
+        class: "tiny", title: "Look inside this data file",
+        onclick: () => dataViewer(item.resolved, item.basename),
+      }, "view") : null)));
   }
   block.append(table);
 

@@ -579,6 +579,48 @@ def data_status():
     return jsonify({"ok": True, **_data_payload()})
 
 
+@app.get("/api/data/preview")
+def data_preview():
+    """Look inside one of the model's data files. Reading h5/xlsx needs pandas
+    and PyTables, which live in the pywr environment — so this shells out to
+    it, the way a run does, rather than adding them to the app."""
+    path = request.args.get("path") or ""
+    key = request.args.get("key") or None
+    # only files this model actually references — not an arbitrary file reader
+    allowed = {item["resolved"] for item in
+               ((STATE["data"] or {}).get("report") or []) if item.get("resolved")}
+    if path not in allowed:
+        return _err("that file is not one of this model's data files", 403)
+    info = envsetup.check_env()
+    if not info["ready"]:
+        return _err("viewing data files needs the pywr environment "
+                    "(h5 and xlsx are read with pandas) — set it up first", 409)
+    out_path = os.path.join(tempfile.gettempdir(),
+                            f"pywr_reader_view_{uuid.uuid4().hex[:8]}.json")
+    cmd = [info["python"], os.path.join(APP_DIR, "pywr_reader", "dataview.py"),
+           path, out_path]
+    if key:
+        cmd.append(key)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if not os.path.isfile(out_path):
+            return _err(proc.stderr[-800:] or "could not read the file")
+        with open(out_path, encoding="utf-8") as fh:
+            result = json.load(fh)
+    except subprocess.TimeoutExpired:
+        return _err("timed out reading that file")
+    finally:
+        if os.path.isfile(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+    if not result.get("ok"):
+        return _err(result.get("error") or "could not read the file")
+    result["path"] = path
+    return jsonify(result)
+
+
 @app.post("/api/data/dirs")
 def data_add_dir():
     body = request.get_json(force=True)

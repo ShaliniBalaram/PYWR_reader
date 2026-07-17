@@ -51,6 +51,22 @@ body {
 .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .run-item .tiny { padding: 1px 6px; }
 
+/* data file viewer */
+.dv-wrap { display: flex; gap: 10px; align-items: flex-start; }
+.dv-keys { width: 290px; flex: none; }
+.dv-keys.hidden { display: none; }
+.dv-keys .browser-list { max-height: 44vh; margin: 6px 0 0; }
+.dv-body { flex: 1; min-width: 0; }
+.dv-scroll {
+  max-height: 44vh; overflow: auto;
+  border: 1px solid var(--grid); border-radius: 6px;
+}
+.dv-table { width: max-content; }
+.dv-table td, .dv-table th { white-space: nowrap; padding: 3px 9px; }
+.dv-table th { position: sticky; top: 0; background: var(--surface-2); }
+.browser-list .entry.sel { background: #1c5cab; color: #fff; }
+.browser-list .entry .sz { margin-left: auto; color: var(--muted); font-size: 11px; }
+
 /* JSON editor */
 .json-edit {
   width: 100%; min-height: 46vh; resize: vertical;
@@ -115,7 +131,8 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 button.mode.active { background: #1c5cab; border-color: #2a78d6; color: #fff; }
 button.danger { border-color: var(--critical); color: #e66767; }
 button.danger:hover { background: #3a1717; }
-button.tiny { padding: 1px 7px; font-size: 12px; border-radius: 5px; }
+button.tiny { padding: 1px 7px; font-size: 12px; border-radius: 5px;
+              white-space: nowrap; }
 
 .chip {
   padding: 3px 10px; border-radius: 99px;
