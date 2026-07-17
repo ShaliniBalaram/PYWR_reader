@@ -66,6 +66,11 @@ body {
 .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; opacity: 0.35; }
 .chip-toggle.on .chip-dot { opacity: 1; }
 .dv-svg { width: 100%; height: auto; display: block; }
+.dv-plotctl { margin-bottom: 6px; }
+.dv-plotctl .dv-lock { display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); font-size: 12px; margin-left: 4px; cursor: pointer; }
+.dv-svgwrap { touch-action: none; }
+
 .dv-readout { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px; min-height: 16px; }
 .dv-rv { display: inline-flex; align-items: center; gap: 4px; }
 

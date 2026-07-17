@@ -1414,6 +1414,7 @@ async function dataViewer(path, basename) {
   let keys = [], current = null, mode = "table", preview = null;
   const seriesCache = new Map();      // key -> /api/data/series result
   const selCols = new Map();          // key -> Set of column names to plot
+  const plotView = new Map();         // key -> {i0, i1, lockY} zoom window
 
   const renderKeys = () => {
     const q = filter.value.trim().toLowerCase();
@@ -1490,6 +1491,8 @@ async function dataViewer(path, basename) {
     }
     let sel = selCols.get(cacheKey);
     if (!sel) { sel = new Set([names[0]]); selCols.set(cacheKey, sel); }
+    let view = plotView.get(cacheKey);         // zoom window survives chip toggles
+    if (!view) { view = { i0: null, i1: null, lockY: false }; plotView.set(cacheKey, view); }
     const colorFor = nm => RUN_COLORS[names.indexOf(nm) % RUN_COLORS.length];
     const chartHost = el("div", { class: "dv-charthost" });
     const chips = el("div", { class: "dv-chips" });
@@ -1497,7 +1500,7 @@ async function dataViewer(path, basename) {
       const list = names.filter(nm => sel.has(nm)).map(nm =>
         ({ name: nm, color: colorFor(nm),
            values: data.series.find(s => s.name === nm).values }));
-      chartHost.replaceChildren(dataChart(data.dates, list));
+      chartHost.replaceChildren(dataChart(data.dates, list, view));
       [...chips.children].forEach(c =>
         c.classList.toggle("on", sel.has(c.dataset.name)));
     };
@@ -1548,80 +1551,170 @@ async function dataViewer(path, basename) {
 }
 
 /** A line chart for a data file — like the node chart, but auto-ranged to the
- *  data and not tied to the run timeline (a data file has no run cursor). */
-function dataChart(dates, seriesList) {
+ *  data, not tied to the run timeline, and zoomable in time.
+ *
+ *  view {i0, i1, lockY} is the visible index window; it is mutated in place and
+ *  handed back in on redraw, so zoom survives toggling columns. Scroll to zoom
+ *  on the cursor, drag to pan, double-click or Reset for the whole range.
+ *  "lock Y" holds the full value scale so a zoom doesn't rescale the axis. */
+function dataChart(dates, seriesList, view) {
   const W = 640, H = 250, m = { l: 56, r: 12, t: 10, b: 26 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const n = dates.length;
-  let lo = Infinity, hi = -Infinity;
+  if (view.i0 == null || view.i1 == null || view.i1 > n - 1) {
+    view.i0 = 0; view.i1 = n - 1;               // first draw: whole range
+  }
+  // full-data value range, for lock-Y and for reset
+  let fLo = Infinity, fHi = -Infinity;
   for (const s of seriesList) for (const v of s.values) {
     if (v == null) continue;
-    if (v < lo) lo = v;
-    if (v > hi) hi = v;
+    if (v < fLo) fLo = v;
+    if (v > fHi) fHi = v;
   }
-  if (!isFinite(lo)) { lo = 0; hi = 1; }
-  if (hi === lo) { hi = lo + 1; lo -= 1; }
-  const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;   // auto-range, not 0-based
-  const X = i => m.l + (i / Math.max(1, n - 1)) * iw;
-  const Y = v => m.t + ih - ((v - lo) / (hi - lo)) * ih;
+  if (!isFinite(fLo)) { fLo = 0; fHi = 1; }
 
   const box = el("div", { class: "chart-box dv-chart" });
   const readout = el("div", { class: "dv-readout muted small" },
-    "hover the chart to read values");
-  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "dv-svg" });
+    "scroll to zoom · drag to pan · double-click to reset");
+  const svgWrap = el("div", { class: "dv-svgwrap" });
+  let dragging = false, lastX = 0;
 
-  for (let i = 0; i <= 4; i++) {                        // y gridlines + ticks
-    const v = lo + ((hi - lo) * i) / 4, y = Y(v);
-    svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y, y2: y,
-      stroke: i === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
-    const t = svgEl("text", { x: m.l - 6, y: y + 3, "text-anchor": "end",
-      fill: "var(--muted)", "font-size": 10 });
-    t.textContent = fmt(v);
-    svg.append(t);
+  function zoom(centerIdx, factor) {
+    const span = view.i1 - view.i0;
+    const frac = span > 0 ? (centerIdx - view.i0) / span : 0.5;
+    let ns = Math.max(4, Math.min(n - 1, span * factor));   // 4 pts is as far in as it goes
+    let i0 = centerIdx - frac * ns, i1 = i0 + ns;
+    if (i0 < 0) { i1 -= i0; i0 = 0; }
+    if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
+    view.i0 = Math.max(0, i0); view.i1 = i1;
+    draw();
   }
-  for (let i = 0; i < 5; i++) {                          // x ticks (dates)
-    const idx = Math.round((i / 4) * (n - 1));
-    const t = svgEl("text", { x: X(idx), y: H - 8, fill: "var(--muted)",
-      "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle",
-      "font-size": 10 });
-    t.textContent = (dates[idx] || "").slice(0, 10);
-    svg.append(t);
+  function pan(dxFrac) {
+    const span = view.i1 - view.i0;
+    let i0 = view.i0 - dxFrac * span, i1 = view.i1 - dxFrac * span;
+    if (i0 < 0) { i1 -= i0; i0 = 0; }
+    if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
+    view.i0 = Math.max(0, i0); view.i1 = i1;
+    draw();
   }
-  for (const s of seriesList) {                          // one path per series
-    let d = "", started = false;
-    const step = Math.max(1, Math.floor(s.values.length / 1400));
-    for (let i = 0; i < s.values.length; i += step) {
-      const v = s.values[i];
-      if (v == null) { started = false; continue; }      // gap over NaNs
-      d += (started ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
-      started = true;
+
+  function draw() {
+    const i0 = Math.max(0, Math.floor(view.i0));
+    const i1 = Math.min(n - 1, Math.ceil(view.i1));
+    const span = Math.max(1, i1 - i0);
+    let lo = fLo, hi = fHi;
+    if (!view.lockY) {                           // auto-fit Y to the window
+      lo = Infinity; hi = -Infinity;
+      for (const s of seriesList) for (let i = i0; i <= i1; i++) {
+        const v = s.values[i];
+        if (v == null) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      if (!isFinite(lo)) { lo = fLo; hi = fHi; }
     }
-    svg.append(svgEl("path", { d, fill: "none", stroke: s.color,
-      "stroke-width": 1.5, "stroke-linejoin": "round" }));
+    if (hi === lo) { hi = lo + 1; lo -= 1; }
+    const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
+    const X = i => m.l + ((i - i0) / span) * iw;
+    const Y = v => m.t + ih - ((v - lo) / (hi - lo)) * ih;
+
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "dv-svg" });
+    for (let k = 0; k <= 4; k++) {               // y gridlines + ticks
+      const v = lo + ((hi - lo) * k) / 4, y = Y(v);
+      svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y, y2: y,
+        stroke: k === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
+      const t = svgEl("text", { x: m.l - 6, y: y + 3, "text-anchor": "end",
+        fill: "var(--muted)", "font-size": 10 });
+      t.textContent = fmt(v);
+      svg.append(t);
+    }
+    for (let k = 0; k < 5; k++) {                 // x ticks (dates of the window)
+      const idx = Math.round(i0 + (k / 4) * span);
+      const t = svgEl("text", { x: X(idx), y: H - 8, fill: "var(--muted)",
+        "text-anchor": k === 0 ? "start" : k === 4 ? "end" : "middle",
+        "font-size": 10 });
+      t.textContent = (dates[idx] || "").slice(0, 10);
+      svg.append(t);
+    }
+    const showPts = span <= 80;                   // dots once zoomed in far
+    const step = Math.max(1, Math.floor(span / 1400));
+    for (const s of seriesList) {
+      let d = "", started = false;
+      for (let i = i0; i <= i1; i += step) {
+        const v = s.values[i];
+        if (v == null) { started = false; continue; }
+        d += (started ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
+        started = true;
+        if (showPts) svg.append(svgEl("circle", { cx: X(i), cy: Y(v), r: 1.8,
+          fill: s.color }));
+      }
+      svg.append(svgEl("path", { d, fill: "none", stroke: s.color,
+        "stroke-width": 1.5, "stroke-linejoin": "round" }));
+    }
+    const guide = svgEl("line", { y1: m.t, y2: m.t + ih, stroke: "var(--ink)",
+      "stroke-dasharray": "3 3", "stroke-width": 1, opacity: 0 });
+    svg.append(guide);
+    const hit = svgEl("rect", { x: m.l, y: m.t, width: iw, height: ih,
+      fill: "transparent", style: "cursor:crosshair", "touch-action": "none" });
+    svg.append(hit);
+
+    const idxAt = clientX => {
+      const r = svg.getBoundingClientRect();
+      const f = ((clientX - r.left) * (W / r.width) - m.l) / iw;
+      return { f, idx: Math.max(i0, Math.min(i1, Math.round(i0 + f * span))) };
+    };
+    // pointer events (with capture) so a drag that leaves the chart still works
+    // and no window-level listeners leak across redraws
+    hit.addEventListener("pointerdown", e => {
+      dragging = true; lastX = e.clientX;
+      hit.setPointerCapture(e.pointerId); hit.style.cursor = "grabbing";
+    });
+    hit.addEventListener("pointerup", e => {
+      dragging = false; hit.style.cursor = "crosshair";
+      hit.releasePointerCapture(e.pointerId);
+    });
+    hit.addEventListener("pointermove", e => {
+      if (dragging) {
+        const r = svg.getBoundingClientRect();
+        pan(((e.clientX - lastX) * (W / r.width)) / iw);
+        lastX = e.clientX;
+        return;
+      }
+      const { idx } = idxAt(e.clientX);
+      guide.setAttribute("x1", X(idx)); guide.setAttribute("x2", X(idx));
+      guide.setAttribute("opacity", 0.5);
+      readout.replaceChildren(
+        el("span", { class: "mono" }, (dates[idx] || "").slice(0, 10)),
+        ...seriesList.map(s => el("span", { class: "dv-rv" },
+          el("span", { class: "chip-dot", style: `background:${s.color}` }),
+          el("span", { class: "mono" },
+            s.values[idx] == null ? "—" : fmt(s.values[idx])))));
+    });
+    hit.addEventListener("mouseleave", () => guide.setAttribute("opacity", 0));
+    hit.addEventListener("wheel", e => {
+      e.preventDefault();
+      zoom(idxAt(e.clientX).idx, e.deltaY < 0 ? 0.8 : 1.25);
+    }, { passive: false });
+    hit.addEventListener("dblclick", () => { view.i0 = 0; view.i1 = n - 1; draw(); });
+
+    svgWrap.replaceChildren(svg);
   }
-  const guide = svgEl("line", { y1: m.t, y2: m.t + ih, stroke: "var(--ink)",
-    "stroke-dasharray": "3 3", "stroke-width": 1, opacity: 0 });
-  svg.append(guide);
-  const hit = svgEl("rect", { x: m.l, y: m.t, width: iw, height: ih,
-    fill: "transparent", style: "cursor:crosshair" });
-  hit.addEventListener("mousemove", e => {
-    const r = svg.getBoundingClientRect();
-    let idx = Math.round((((e.clientX - r.left) * (W / r.width) - m.l) / iw)
-                         * (n - 1));
-    idx = Math.max(0, Math.min(n - 1, idx));
-    guide.setAttribute("x1", X(idx));
-    guide.setAttribute("x2", X(idx));
-    guide.setAttribute("opacity", 0.5);
-    readout.replaceChildren(
-      el("span", { class: "mono" }, (dates[idx] || "").slice(0, 10)),
-      ...seriesList.map(s => el("span", { class: "dv-rv" },
-        el("span", { class: "chip-dot", style: `background:${s.color}` }),
-        el("span", { class: "mono" },
-          s.values[idx] == null ? "—" : fmt(s.values[idx])))));
-  });
-  hit.addEventListener("mouseleave", () => guide.setAttribute("opacity", 0));
-  svg.append(hit);
-  box.append(readout, svg);
+
+  const ctlBtn = (label, title, fn) =>
+    el("button", { class: "tiny", title, onclick: fn }, label);
+  const lockCb = el("input", { type: "checkbox",
+    ...(view.lockY ? { checked: "" } : {}) });
+  lockCb.addEventListener("change", () => { view.lockY = lockCb.checked; draw(); });
+  const controls = el("div", { class: "row gap dv-plotctl" },
+    ctlBtn("−", "Zoom out", () => zoom((view.i0 + view.i1) / 2, 1.5)),
+    ctlBtn("+", "Zoom in", () => zoom((view.i0 + view.i1) / 2, 0.66)),
+    ctlBtn("Reset", "Show the whole range",
+      () => { view.i0 = 0; view.i1 = n - 1; draw(); }),
+    el("label", { class: "dv-lock", title: "Keep the full value scale while zooming" },
+      lockCb, " lock Y"));
+
+  box.append(controls, readout, svgWrap);
+  draw();
   return box;
 }
 

@@ -132,8 +132,12 @@ see what's actually in it. Two ways to look:
   is read, so a 35,000-row timeseries opens instantly.
 - **Plot** — the whole of a column over time, as a line chart. Tick the
   columns to overlay (a timeseries file often has dozens), hover to read the
-  values on a date. The full column is read and thinned to fit, so an 80-year
-  daily series draws without shipping every point.
+  values on a date. **Zoom** in on a period — scroll on the chart, or the
+  −/+/Reset buttons — and **drag to pan** along time; the axis relabels to the
+  window you're looking at. The value axis auto-fits what's on screen, or tick
+  **lock Y** to hold the full scale so a zoom doesn't rescale it. The full
+  column is read and thinned to fit, so an 80-year daily series draws without
+  shipping every point.
 
 Both flavours of h5 work — the pandas kind, and the plain HDF5 that real pywr
 timeseries files often turn out to be.
