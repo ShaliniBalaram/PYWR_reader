@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**126 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**129 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -135,12 +135,14 @@ see what's actually in it. Two ways to look:
   **Zoom** in on a period — scroll on the chart, or the −/+/Reset buttons — and
   **drag to pan**; the axis relabels to the window. The whole column is thinned
   to an overview so 80 years draws at once, but **zoom in and it re-reads that
-  window at full daily resolution** — down to individual days, each a point.
-  The value axis auto-fits what's on screen, or tick **lock Y** to hold the
-  full scale so a zoom doesn't rescale it.
+  window at full daily resolution** — down to individual days, each a point. On
+  a big file only the zoomed rows are read from disk, so it stays quick. The
+  value axis auto-fits what's on screen, or tick **lock Y** to hold the full
+  scale so a zoom doesn't rescale it.
 
-Both flavours of h5 work — the pandas kind, and the plain HDF5 that real pywr
-timeseries files often turn out to be.
+This works for `.csv` and `.xlsx` columns too, not just h5. Both flavours of h5
+work — the pandas kind, and the plain HDF5 that real pywr timeseries files
+often turn out to be.
 
 This one needs the pywr environment: h5 and xlsx are read with pandas, which
 lives there rather than in the app (which is still Flask and nothing else).
@@ -290,7 +292,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    126 unittest tests
+├── tests/                    129 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
