@@ -1470,20 +1470,20 @@ async function dataViewer(path, basename) {
       return;
     }
     const cacheKey = current;
-    let data = seriesCache.get(cacheKey);
-    if (!data) {
+    let overview = seriesCache.get(cacheKey);          // full range, thinned
+    if (!overview) {
       content.replaceChildren(el("p", { class: "muted small" }, "reading…"));
       try {
-        data = await api("/api/data/series?path=" + encodeURIComponent(path)
+        overview = await api("/api/data/series?path=" + encodeURIComponent(path)
           + "&key=" + encodeURIComponent(cacheKey));
-        seriesCache.set(cacheKey, data);
+        seriesCache.set(cacheKey, overview);
       } catch (err) {
         content.replaceChildren(el("div", { class: "json-err" }, err.message));
         return;
       }
     }
     if (mode !== "plot" || current !== cacheKey) return;   // user moved on
-    const names = data.series.map(s => s.name);
+    const names = overview.series.map(s => s.name);
     if (!names.length) {
       content.replaceChildren(el("p", { class: "muted small" },
         "No numeric columns to plot in this key."));
@@ -1491,36 +1491,85 @@ async function dataViewer(path, basename) {
     }
     let sel = selCols.get(cacheKey);
     if (!sel) { sel = new Set([names[0]]); selCols.set(cacheKey, sel); }
-    let view = plotView.get(cacheKey);         // zoom window survives chip toggles
-    if (!view) { view = { i0: null, i1: null, lockY: false }; plotView.set(cacheKey, view); }
+    let view = plotView.get(cacheKey);         // row window, survives chip toggles
+    if (!view) { view = { r0: 0, r1: overview.n_rows, lockY: false };
+                 plotView.set(cacheKey, view); }
     const colorFor = nm => RUN_COLORS[names.indexOf(nm) % RUN_COLORS.length];
+    const total = overview.n_rows;
+
+    // whole-file value range from the overview, so lock-Y is a stable scale
+    const fullRange = (() => {
+      let lo = Infinity, hi = -Infinity;
+      for (const s of overview.series) for (const v of s.values) {
+        if (v == null) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      return isFinite(lo) ? { lo, hi } : { lo: 0, hi: 1 };
+    })();
+
+    let chunk = overview;                       // the resolution currently loaded
+    let fetchSeq = 0, refetchTimer = null;
     const chartHost = el("div", { class: "dv-charthost" });
     const chips = el("div", { class: "dv-chips" });
-    const draw = () => {
-      const list = names.filter(nm => sel.has(nm)).map(nm =>
-        ({ name: nm, color: colorFor(nm),
-           values: data.series.find(s => s.name === nm).values }));
-      chartHost.replaceChildren(dataChart(data.dates, list, view));
+    const status = el("span", { class: "muted small" });
+
+    const seriesFor = () => names.filter(nm => sel.has(nm)).map(nm =>
+      ({ name: nm, color: colorFor(nm),
+         values: chunk.series.find(s => s.name === nm).values }));
+    const renderChart = () => {
+      chartHost.replaceChildren(dataChart(chunk.rows, chunk.dates, total,
+        seriesFor(), view, fullRange, onView));
       [...chips.children].forEach(c =>
         c.classList.toggle("on", sel.has(c.dataset.name)));
     };
+
+    function onView() {                         // debounce a detail re-fetch
+      clearTimeout(refetchTimer);
+      refetchTimer = setTimeout(maybeRefetch, 350);
+    }
+    async function maybeRefetch() {
+      const viewRows = view.r1 - view.r0;
+      if (viewRows >= total * 0.9) {            // back near the whole range
+        if (chunk !== overview) { chunk = overview; renderChart(); }
+        return;
+      }
+      const covered = chunk.start <= view.r0 && chunk.stop >= view.r1;
+      if (covered && !chunk.downsampled) return;    // already every row here
+      const inView = chunk.rows.filter(r => r >= view.r0 && r <= view.r1).length;
+      if (covered && inView >= Math.min(Math.ceil(viewRows), 700)) return;
+      const margin = Math.round(viewRows * 0.5);    // headroom for panning
+      const s = Math.max(0, Math.floor(view.r0 - margin));
+      const e = Math.min(total, Math.ceil(view.r1 + margin));
+      const seq = ++fetchSeq;
+      status.textContent = " · loading detail…";
+      try {
+        const win = await api("/api/data/series?path=" + encodeURIComponent(path)
+          + "&key=" + encodeURIComponent(cacheKey) + "&start=" + s + "&stop=" + e);
+        if (seq !== fetchSeq || mode !== "plot" || current !== cacheKey) return;
+        chunk = win;
+        renderChart();
+      } catch { /* keep the coarser view */ }
+      finally { if (seq === fetchSeq) status.textContent = ""; }
+    }
+
     chips.replaceChildren(...names.map(nm => el("button", {
       class: "chip-toggle" + (sel.has(nm) ? " on" : ""), "data-name": nm,
       onclick: () => {
         sel.has(nm) ? sel.delete(nm) : sel.add(nm);
         if (!sel.size) sel.add(nm);      // keep at least one line
-        draw();
+        renderChart();
       },
     }, el("span", { class: "chip-dot", style: `background:${colorFor(nm)}` }), nm)));
-    const notes = [];
-    if (data.downsampled) notes.push(`${data.n_rows.toLocaleString()} rows, thinned to fit`);
-    if (data.cols_truncated)
-      notes.push(`first ${names.length} of ${data.n_series_available} columns`);
+
+    const note = el("p", { class: "muted small" },
+      `${total.toLocaleString()} rows · scroll to zoom in for daily detail`,
+      status);
+    if (overview.cols_truncated)
+      note.append(` · first ${names.length} of ${overview.n_series_available} columns`);
     content.replaceChildren(
-      names.length > 1 ? chips : el("span"),
-      chartHost,
-      notes.length ? el("p", { class: "muted small" }, notes.join(" · ")) : el("span"));
-    draw();
+      names.length > 1 ? chips : el("span"), chartHost, note);
+    renderChart();
   }
 
   async function load(key) {
@@ -1550,76 +1599,83 @@ async function dataViewer(path, basename) {
   load(null);
 }
 
-/** A line chart for a data file — like the node chart, but auto-ranged to the
- *  data, not tied to the run timeline, and zoomable in time.
+/** A line chart for a data file — zoomable in time, with the x-axis in
+ *  absolute row coordinates so chunks at different resolutions line up.
  *
- *  view {i0, i1, lockY} is the visible index window; it is mutated in place and
- *  handed back in on redraw, so zoom survives toggling columns. Scroll to zoom
- *  on the cursor, drag to pan, double-click or Reset for the whole range.
- *  "lock Y" holds the full value scale so a zoom doesn't rescale the axis. */
-function dataChart(dates, seriesList, view) {
+ *  rows[i] is the absolute row of point i (ascending); dates[i] its label;
+ *  total is the file's row count. view {r0, r1, lockY} is the visible row
+ *  window, mutated in place. onView() fires after a zoom/pan so the caller can
+ *  re-fetch that window at higher resolution. Scroll to zoom, drag to pan,
+ *  double-click or Reset for the whole range; "lock Y" holds fullRange. */
+function dataChart(rows, dates, total, seriesList, view, fullRange, onView) {
   const W = 640, H = 250, m = { l: 56, r: 12, t: 10, b: 26 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const n = dates.length;
-  if (view.i0 == null || view.i1 == null || view.i1 > n - 1) {
-    view.i0 = 0; view.i1 = n - 1;               // first draw: whole range
+  const P = rows.length;
+  if (view.r0 == null || view.r1 == null || view.r1 > total) {
+    view.r0 = 0; view.r1 = total;
   }
-  // full-data value range, for lock-Y and for reset
-  let fLo = Infinity, fHi = -Infinity;
-  for (const s of seriesList) for (const v of s.values) {
-    if (v == null) continue;
-    if (v < fLo) fLo = v;
-    if (v > fHi) fHi = v;
-  }
-  if (!isFinite(fLo)) { fLo = 0; fHi = 1; }
-
   const box = el("div", { class: "chart-box dv-chart" });
   const readout = el("div", { class: "dv-readout muted small" },
     "scroll to zoom · drag to pan · double-click to reset");
   const svgWrap = el("div", { class: "dv-svgwrap" });
   let dragging = false, lastX = 0;
 
-  function zoom(centerIdx, factor) {
-    const span = view.i1 - view.i0;
-    const frac = span > 0 ? (centerIdx - view.i0) / span : 0.5;
-    let ns = Math.max(4, Math.min(n - 1, span * factor));   // 4 pts is as far in as it goes
-    let i0 = centerIdx - frac * ns, i1 = i0 + ns;
-    if (i0 < 0) { i1 -= i0; i0 = 0; }
-    if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
-    view.i0 = Math.max(0, i0); view.i1 = i1;
-    draw();
+  // last point at or before row r (binary search; rows ascending)
+  const ptAtOrBefore = r => {
+    let lo = 0, hi = P - 1, ans = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (rows[mid] <= r) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans;
+  };
+  const clamp = () => {
+    const minSpan = Math.min(3, total);
+    if (view.r1 - view.r0 < minSpan) view.r1 = view.r0 + minSpan;
+    if (view.r0 < 0) { view.r1 -= view.r0; view.r0 = 0; }
+    if (view.r1 > total) { view.r0 -= (view.r1 - total); view.r1 = total; }
+    if (view.r0 < 0) view.r0 = 0;
+  };
+  const rowAtClientX = clientX => {
+    const svg = svgWrap.querySelector("svg");
+    const r = svg.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, ((clientX - r.left) * (W / r.width) - m.l) / iw));
+    return view.r0 + f * (view.r1 - view.r0);
+  };
+  function zoom(centerRow, factor) {
+    const span = view.r1 - view.r0;
+    const f = span > 0 ? (centerRow - view.r0) / span : 0.5;
+    const ns = Math.max(Math.min(3, total), Math.min(total, span * factor));
+    view.r0 = centerRow - f * ns; view.r1 = view.r0 + ns;
+    clamp(); draw(); if (onView) onView();
   }
   function pan(dxFrac) {
-    const span = view.i1 - view.i0;
-    let i0 = view.i0 - dxFrac * span, i1 = view.i1 - dxFrac * span;
-    if (i0 < 0) { i1 -= i0; i0 = 0; }
-    if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
-    view.i0 = Math.max(0, i0); view.i1 = i1;
-    draw();
+    const span = view.r1 - view.r0;
+    view.r0 -= dxFrac * span; view.r1 -= dxFrac * span;
+    clamp(); draw(); if (onView) onView();
   }
 
   function draw() {
-    const i0 = Math.max(0, Math.floor(view.i0));
-    const i1 = Math.min(n - 1, Math.ceil(view.i1));
-    const span = Math.max(1, i1 - i0);
-    let lo = fLo, hi = fHi;
-    if (!view.lockY) {                           // auto-fit Y to the window
+    const r0 = view.r0, r1 = view.r1, span = Math.max(1, r1 - r0);
+    const a = ptAtOrBefore(r0), b = Math.min(P - 1, ptAtOrBefore(r1) + 1);
+    let lo = fullRange.lo, hi = fullRange.hi;
+    if (!view.lockY) {                            // auto-fit Y to the window
       lo = Infinity; hi = -Infinity;
-      for (const s of seriesList) for (let i = i0; i <= i1; i++) {
+      for (const s of seriesList) for (let i = a; i <= b; i++) {
         const v = s.values[i];
         if (v == null) continue;
         if (v < lo) lo = v;
         if (v > hi) hi = v;
       }
-      if (!isFinite(lo)) { lo = fLo; hi = fHi; }
+      if (!isFinite(lo)) { lo = fullRange.lo; hi = fullRange.hi; }
     }
     if (hi === lo) { hi = lo + 1; lo -= 1; }
     const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;
-    const X = i => m.l + ((i - i0) / span) * iw;
+    const X = row => m.l + ((row - r0) / span) * iw;
     const Y = v => m.t + ih - ((v - lo) / (hi - lo)) * ih;
 
     const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "dv-svg" });
-    for (let k = 0; k <= 4; k++) {               // y gridlines + ticks
+    for (let k = 0; k <= 4; k++) {                // y gridlines + ticks
       const v = lo + ((hi - lo) * k) / 4, y = Y(v);
       svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y, y2: y,
         stroke: k === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
@@ -1629,23 +1685,23 @@ function dataChart(dates, seriesList, view) {
       svg.append(t);
     }
     for (let k = 0; k < 5; k++) {                 // x ticks (dates of the window)
-      const idx = Math.round(i0 + (k / 4) * span);
-      const t = svgEl("text", { x: X(idx), y: H - 8, fill: "var(--muted)",
+      const pi = ptAtOrBefore(r0 + (k / 4) * span);
+      const t = svgEl("text", { x: m.l + (k / 4) * iw, y: H - 8, fill: "var(--muted)",
         "text-anchor": k === 0 ? "start" : k === 4 ? "end" : "middle",
         "font-size": 10 });
-      t.textContent = (dates[idx] || "").slice(0, 10);
+      t.textContent = (dates[pi] || "").slice(0, 10);
       svg.append(t);
     }
-    const showPts = span <= 80;                   // dots once zoomed in far
-    const step = Math.max(1, Math.floor(span / 1400));
+    const showPts = (b - a) <= 80;                // dots once zoomed in far
     for (const s of seriesList) {
       let d = "", started = false;
-      for (let i = i0; i <= i1; i += step) {
+      for (let i = a; i <= b; i++) {
         const v = s.values[i];
         if (v == null) { started = false; continue; }
-        d += (started ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
+        const x = X(rows[i]);
+        d += (started ? "L" : "M") + x.toFixed(1) + "," + Y(v).toFixed(1);
         started = true;
-        if (showPts) svg.append(svgEl("circle", { cx: X(i), cy: Y(v), r: 1.8,
+        if (showPts) svg.append(svgEl("circle", { cx: x, cy: Y(v), r: 1.8,
           fill: s.color }));
       }
       svg.append(svgEl("path", { d, fill: "none", stroke: s.color,
@@ -1658,12 +1714,7 @@ function dataChart(dates, seriesList, view) {
       fill: "transparent", style: "cursor:crosshair", "touch-action": "none" });
     svg.append(hit);
 
-    const idxAt = clientX => {
-      const r = svg.getBoundingClientRect();
-      const f = ((clientX - r.left) * (W / r.width) - m.l) / iw;
-      return { f, idx: Math.max(i0, Math.min(i1, Math.round(i0 + f * span))) };
-    };
-    // pointer events (with capture) so a drag that leaves the chart still works
+    // pointer events with capture: a drag that leaves the chart still tracks,
     // and no window-level listeners leak across redraws
     hit.addEventListener("pointerdown", e => {
       dragging = true; lastX = e.clientX;
@@ -1680,22 +1731,24 @@ function dataChart(dates, seriesList, view) {
         lastX = e.clientX;
         return;
       }
-      const { idx } = idxAt(e.clientX);
-      guide.setAttribute("x1", X(idx)); guide.setAttribute("x2", X(idx));
+      const pi = ptAtOrBefore(rowAtClientX(e.clientX));
+      guide.setAttribute("x1", X(rows[pi])); guide.setAttribute("x2", X(rows[pi]));
       guide.setAttribute("opacity", 0.5);
       readout.replaceChildren(
-        el("span", { class: "mono" }, (dates[idx] || "").slice(0, 10)),
+        el("span", { class: "mono" }, (dates[pi] || "").slice(0, 10)),
         ...seriesList.map(s => el("span", { class: "dv-rv" },
           el("span", { class: "chip-dot", style: `background:${s.color}` }),
           el("span", { class: "mono" },
-            s.values[idx] == null ? "—" : fmt(s.values[idx])))));
+            s.values[pi] == null ? "—" : fmt(s.values[pi])))));
     });
     hit.addEventListener("mouseleave", () => guide.setAttribute("opacity", 0));
     hit.addEventListener("wheel", e => {
       e.preventDefault();
-      zoom(idxAt(e.clientX).idx, e.deltaY < 0 ? 0.8 : 1.25);
+      zoom(rowAtClientX(e.clientX), e.deltaY < 0 ? 0.8 : 1.25);
     }, { passive: false });
-    hit.addEventListener("dblclick", () => { view.i0 = 0; view.i1 = n - 1; draw(); });
+    hit.addEventListener("dblclick", () => {
+      view.r0 = 0; view.r1 = total; draw(); if (onView) onView();
+    });
 
     svgWrap.replaceChildren(svg);
   }
@@ -1706,10 +1759,10 @@ function dataChart(dates, seriesList, view) {
     ...(view.lockY ? { checked: "" } : {}) });
   lockCb.addEventListener("change", () => { view.lockY = lockCb.checked; draw(); });
   const controls = el("div", { class: "row gap dv-plotctl" },
-    ctlBtn("−", "Zoom out", () => zoom((view.i0 + view.i1) / 2, 1.5)),
-    ctlBtn("+", "Zoom in", () => zoom((view.i0 + view.i1) / 2, 0.66)),
+    ctlBtn("−", "Zoom out", () => zoom((view.r0 + view.r1) / 2, 1.5)),
+    ctlBtn("+", "Zoom in", () => zoom((view.r0 + view.r1) / 2, 0.66)),
     ctlBtn("Reset", "Show the whole range",
-      () => { view.i0 = 0; view.i1 = n - 1; draw(); }),
+      () => { view.r0 = 0; view.r1 = total; draw(); if (onView) onView(); }),
     el("label", { class: "dv-lock", title: "Keep the full value scale while zooming" },
       lockCb, " lock Y"));
 

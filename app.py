@@ -585,10 +585,13 @@ class _ViewError(Exception):
         self.code = code
 
 
-def _run_dataview(path, key, series=False):
+def _run_dataview(path, key, series=False, window=None):
     """Read a data file via dataview.py in the pywr environment. Reading
     h5/xlsx needs pandas and PyTables, which live there — so this shells out,
     the way a run does, rather than adding them to the app.
+
+    window is an optional (start, stop) row range for the plot — a deep zoom
+    re-requests just that slice so it comes back at full daily resolution.
 
     Restricted to files the open model actually references — never an
     arbitrary file reader."""
@@ -609,6 +612,8 @@ def _run_dataview(path, key, series=False):
         cmd.append(key)
     if series:
         cmd.append("--series")
+    if window:
+        cmd += ["--start", str(int(window[0])), "--stop", str(int(window[1]))]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if not os.path.isfile(out_path):
@@ -642,10 +647,19 @@ def data_preview():
 
 @app.get("/api/data/series")
 def data_series():
-    """The whole of a data-file column, downsampled, for a plot."""
+    """A data-file column for a plot, downsampled. With ?start=&stop= it reads
+    just that row window (a zoomed-in view, at full resolution)."""
+    window = None
+    start, stop = request.args.get("start"), request.args.get("stop")
+    if start is not None and stop is not None:
+        try:
+            window = (int(start), int(stop))
+        except ValueError:
+            return _err("start and stop must be integers")
     try:
         result = _run_dataview(request.args.get("path") or "",
-                               request.args.get("key") or None, series=True)
+                               request.args.get("key") or None,
+                               series=True, window=window)
     except _ViewError as exc:
         return _err(exc, exc.code)
     return jsonify(result)

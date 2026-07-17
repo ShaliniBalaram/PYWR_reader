@@ -186,6 +186,28 @@ class TestDataView(unittest.TestCase):
         self.assertFalse(res["downsampled"])
         self.assertEqual(len(res["series"][0]["values"]), 1000)
 
+    def test_series_window_returns_full_daily_detail(self):
+        # a deep zoom re-requests a row window; a window under the plot cap
+        # comes back at every row (step 1), and each point carries its
+        # absolute row so the client can stitch chunks together
+        path = self._make_h5("table")
+        s = os.path.join(tempfile.mkdtemp(), "w.json")
+        subprocess.run([envsetup.env_python(),
+                        os.path.join(ROOT, "pywr_reader", "dataview.py"),
+                        path, s, "/flows", "--series",
+                        "--start", "200", "--stop", "500"],
+                       capture_output=True, text=True, timeout=300)
+        with open(s) as fh:
+            res = json.load(fh)
+        self.assertTrue(res["ok"], res.get("error"))
+        self.assertEqual(res["n_rows"], 1000)            # the whole file
+        self.assertEqual((res["start"], res["stop"]), (200, 500))
+        self.assertFalse(res["downsampled"])             # 300 rows < the cap
+        self.assertEqual(res["rows"][0], 200)            # absolute row indices
+        self.assertEqual(res["rows"][-1], 499)
+        self.assertEqual(res["rows"][1] - res["rows"][0], 1)   # every day
+        self.assertEqual(len(res["rows"]), 300)
+
     def test_series_thins_a_long_column(self):
         # 8000 rows > the 3000-point plot cap → downsampled, last point kept
         tmp = os.path.join(tempfile.mkdtemp(), "long.h5")

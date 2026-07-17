@@ -232,31 +232,47 @@ def _index_by_first_label(frame):
     return frame
 
 
-def read_series(path, key=None):
+def read_series(path, key=None, start=None, stop=None):
+    """Downsampled series for a plot. start/stop are absolute row indices —
+    the plot re-requests a window as you zoom in, so a deep zoom returns every
+    row in view (daily detail) rather than magnifying the thinned overview.
+    Each returned point carries its absolute row, so the client can place it
+    however the chunks are stitched together."""
     frame, n_rows = _read_full(path, key)
-    numeric = frame.select_dtypes(include="number")
+    lo = 0 if start is None else max(0, int(start))
+    hi = n_rows if stop is None else min(n_rows, int(stop))
+    if hi <= lo:
+        hi = min(n_rows, lo + 1)
+    window = frame.iloc[lo:hi]
+
+    numeric = window.select_dtypes(include="number")
     all_cols = list(numeric.columns)
     cols = all_cols[:MAX_PLOT_COLS]
     numeric = numeric[cols]
 
-    downsampled = False
-    if len(numeric) > PLOT_POINTS:              # thin it, keeping the last point
-        step = int(math.ceil(len(numeric) / PLOT_POINTS))
-        kept = numeric.iloc[::step]
-        if len(numeric) and kept.index[-1] != numeric.index[-1]:
-            import pandas as pd
-            kept = pd.concat([kept, numeric.iloc[[-1]]])
-        numeric = kept
+    tw = len(numeric)
+    if tw > PLOT_POINTS:                        # thin it, keeping the last row
+        step = int(math.ceil(tw / PLOT_POINTS))
+        pos = list(range(0, tw, step))
+        if pos and pos[-1] != tw - 1:
+            pos.append(tw - 1)
         downsampled = True
+    else:
+        pos = list(range(tw))
+        downsampled = False
+    kept = numeric.iloc[pos]
 
     return {
         "kind": "series",
         "key": key,
-        "dates": [str(i) for i in numeric.index],
+        "dates": [str(i) for i in kept.index],
         "series": [{"name": str(c),
-                    "values": [_cell(v) for v in numeric[c].tolist()]}
+                    "values": [_cell(v) for v in kept[c].tolist()]}
                    for c in cols],
+        "rows": [lo + p for p in pos],          # absolute row of each point
         "n_rows": int(n_rows),
+        "start": int(lo),
+        "stop": int(hi),
         "downsampled": downsampled,
         "cols_truncated": len(all_cols) > MAX_PLOT_COLS,
         "n_series_available": len(all_cols),
@@ -264,12 +280,18 @@ def read_series(path, key=None):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "--series"]
-    series_mode = "--series" in sys.argv
-    path, out_path = args[0], args[1]
-    key = args[2] if len(args) > 2 else None
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("path")
+    p.add_argument("out")
+    p.add_argument("key", nargs="?", default=None)
+    p.add_argument("--series", action="store_true")
+    p.add_argument("--start", type=int, default=None)
+    p.add_argument("--stop", type=int, default=None)
+    a = p.parse_args()
+    path, out_path, key = a.path, a.out, a.key
     try:
-        result = (read_series(path, key or None) if series_mode
+        result = (read_series(path, key or None, a.start, a.stop) if a.series
                   else inspect(path, key or None))
         result["ok"] = True
     except Exception as exc:  # noqa: BLE001 — report it to the app

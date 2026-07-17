@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**125 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**126 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -130,14 +130,14 @@ see what's actually in it. Two ways to look:
 - **Table** — the keys (or sheets) with their row counts, and the first 200
   rows of whichever you pick, with real dates and column names. Only the head
   is read, so a 35,000-row timeseries opens instantly.
-- **Plot** — the whole of a column over time, as a line chart. Tick the
-  columns to overlay (a timeseries file often has dozens), hover to read the
-  values on a date. **Zoom** in on a period — scroll on the chart, or the
-  −/+/Reset buttons — and **drag to pan** along time; the axis relabels to the
-  window you're looking at. The value axis auto-fits what's on screen, or tick
-  **lock Y** to hold the full scale so a zoom doesn't rescale it. The full
-  column is read and thinned to fit, so an 80-year daily series draws without
-  shipping every point.
+- **Plot** — a column over time, as a line chart. Tick the columns to overlay
+  (a timeseries file often has dozens), hover to read the values on a date.
+  **Zoom** in on a period — scroll on the chart, or the −/+/Reset buttons — and
+  **drag to pan**; the axis relabels to the window. The whole column is thinned
+  to an overview so 80 years draws at once, but **zoom in and it re-reads that
+  window at full daily resolution** — down to individual days, each a point.
+  The value axis auto-fits what's on screen, or tick **lock Y** to hold the
+  full scale so a zoom doesn't rescale it.
 
 Both flavours of h5 work — the pandas kind, and the plain HDF5 that real pywr
 timeseries files often turn out to be.
@@ -290,7 +290,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    125 unittest tests
+├── tests/                    126 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
