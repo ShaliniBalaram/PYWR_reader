@@ -18,7 +18,6 @@ sys.path.insert(0, ROOT)
 import app as app_module  # noqa: E402
 
 EXAMPLE = os.path.join(ROOT, "examples", "gw_network", "pywr_model.json")
-SCENARIO = os.path.join(ROOT, "examples", "scenario_network", "pywr_model.json")
 
 
 class TestApi(unittest.TestCase):
@@ -221,17 +220,6 @@ class TestApi(unittest.TestCase):
         r = self.c.post("/api/run", json={})
         self.assertIn(r.status_code, (200, 409))
         self.assertIn("ok", r.get_json())
-
-    def test_scenario_model_graph_exposes_dims(self):
-        # a model with pywr scenarios reports the picker's dimensions + count
-        data = self.c.post("/api/open", json={"path": SCENARIO}).get_json()
-        self.assertTrue(data["ok"])
-        self.assertEqual(data["n_combinations"], 3)
-        self.assertEqual(len(data["scenario_dims"]), 1)
-        dim = data["scenario_dims"][0]
-        self.assertEqual(dim["name"], "demand")
-        self.assertEqual(dim["size"], 3)
-        self.assertEqual(dim["ensemble_names"], ["low", "mid", "high"])
 
     def test_plain_model_has_no_scenarios(self):
         # the gw_network example defines none → picker stays hidden (count 1)

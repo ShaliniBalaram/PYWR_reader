@@ -56,7 +56,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**97 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**92 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -64,7 +64,7 @@ themselves rather than fail:
 |---|---|---|
 | unit + API | just Flask | loaders, layout, graph ops, every route |
 | frontend contract | just Flask | that `app.js` still agrees with `index.html` and `app.py` — every `$("id")` it looks up exists, every `/api/…` it calls is served |
-| pywr integration | the pywr environment | really executing a model, exact per-edge flows, scenarios |
+| pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording |
 | browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing |
 
 The frontend has no build step and no test framework, so the contract tests
@@ -223,9 +223,7 @@ Turn a picture of a water network into a pywr model:
    appears at the top of the Runs tab — one dropdown per scenario dimension.
    pywr solves the whole ensemble in a single run; the picker chooses which
    combination is drawn on the canvas and in the charts. Run different members
-   and tick them in the Runs list to overlay them. Try it with
-   `examples/scenario_network/pywr_model.json` (a `demand` scenario with
-   low / mid / high members).
+   and tick them in the Runs list to overlay them.
 6. **Warnings:** if pywr emits non-fatal notes during a run (for example a
    model authored for a newer pywr than the bootstrapped one), the run still
    completes and a **⚠** badge appears on it in the Runs tab — click it to read
@@ -246,15 +244,13 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    97 unittest tests
+├── tests/                    92 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
 │   ├── test_frontend_smoke.py    the real UI in a browser (needs playwright)
 │   └── test_run_integration.py   really runs pywr (needs .pywr-env)
 ├── examples/gw_network/      small self-contained runnable demo
-├── examples/scenario_network/  runnable demo with a pywr scenario ensemble
-├── examples/split_network/   runnable demo with an ambiguous split/junction edge
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      playwright, for the optional browser tests
 ├── LICENSE                   MIT
