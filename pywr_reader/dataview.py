@@ -178,11 +178,99 @@ def inspect(path, key=None):
     raise ValueError(f"don't know how to read {path.rsplit('.', 1)[-1]} files")
 
 
+# --- plotting: the head is not enough, the whole column has to be read ------
+PLOT_POINTS = 3000      # a line this long already exceeds the pixels it draws on
+MAX_PLOT_COLS = 40
+
+
+def _read_full(path, key=None):
+    """The whole frame for a key — for plotting, where the head would show only
+    the first weeks of an 80-year series. Returns (frame, n_rows)."""
+    import pandas as pd
+    lower = path.lower()
+    if lower.endswith((".h5", ".hdf5", ".hdf")):
+        try:
+            with pd.HDFStore(path, mode="r") as store:
+                keys = [str(k) for k in store.keys()]
+                if not keys:
+                    raise ValueError("empty store")
+                target = key or (keys[0] if len(keys) == 1 else None)
+                if target is None:
+                    raise ValueError("this file has several keys — pick one")
+                frame = _series_to_frame(store.get(target))
+                return frame, len(frame)
+        except Exception:               # noqa: BLE001 — plain HDF5, use tables
+            import tables
+            with tables.open_file(path, mode="r") as fh:
+                leaf = fh.get_node(key) if key else None
+                if leaf is None:
+                    raise ValueError("this file has several keys — pick one")
+                frame = pd.DataFrame(leaf.read())
+                if list(frame.columns) == [0]:
+                    frame.columns = ["value"]
+                return frame, len(frame)
+    if lower.endswith((".xlsx", ".xls", ".xlsm")):
+        book = pd.ExcelFile(path)
+        sheet = key if key in book.sheet_names else book.sheet_names[0]
+        frame = book.parse(sheet)
+        return _index_by_first_label(frame), len(frame)
+    if lower.endswith((".csv", ".txt")):
+        frame = pd.read_csv(path)
+        return _index_by_first_label(frame), len(frame)
+    raise ValueError(f"can't plot a {path.rsplit('.', 1)[-1]} file")
+
+
+def _index_by_first_label(frame):
+    """A csv/xlsx table usually leads with a label or date column — make it the
+    x-axis so the plot reads against dates, not row numbers. h5 frames already
+    carry a real index, so this only touches the default RangeIndex."""
+    import pandas as pd
+    if (len(frame.columns)
+            and frame.index.equals(pd.RangeIndex(len(frame)))
+            and not pd.api.types.is_numeric_dtype(frame[frame.columns[0]])):
+        return frame.set_index(frame.columns[0])
+    return frame
+
+
+def read_series(path, key=None):
+    frame, n_rows = _read_full(path, key)
+    numeric = frame.select_dtypes(include="number")
+    all_cols = list(numeric.columns)
+    cols = all_cols[:MAX_PLOT_COLS]
+    numeric = numeric[cols]
+
+    downsampled = False
+    if len(numeric) > PLOT_POINTS:              # thin it, keeping the last point
+        step = int(math.ceil(len(numeric) / PLOT_POINTS))
+        kept = numeric.iloc[::step]
+        if len(numeric) and kept.index[-1] != numeric.index[-1]:
+            import pandas as pd
+            kept = pd.concat([kept, numeric.iloc[[-1]]])
+        numeric = kept
+        downsampled = True
+
+    return {
+        "kind": "series",
+        "key": key,
+        "dates": [str(i) for i in numeric.index],
+        "series": [{"name": str(c),
+                    "values": [_cell(v) for v in numeric[c].tolist()]}
+                   for c in cols],
+        "n_rows": int(n_rows),
+        "downsampled": downsampled,
+        "cols_truncated": len(all_cols) > MAX_PLOT_COLS,
+        "n_series_available": len(all_cols),
+    }
+
+
 def main():
-    path, out_path = sys.argv[1], sys.argv[2]
-    key = sys.argv[3] if len(sys.argv) > 3 else None
+    args = [a for a in sys.argv[1:] if a != "--series"]
+    series_mode = "--series" in sys.argv
+    path, out_path = args[0], args[1]
+    key = args[2] if len(args) > 2 else None
     try:
-        result = inspect(path, key or None)
+        result = (read_series(path, key or None) if series_mode
+                  else inspect(path, key or None))
         result["ok"] = True
     except Exception as exc:  # noqa: BLE001 — report it to the app
         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

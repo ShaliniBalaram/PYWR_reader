@@ -159,6 +159,48 @@ class TestDataView(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertIn("json", res["error"])
 
+    def _series(self, path, key=None):
+        out = os.path.join(tempfile.mkdtemp(), "s.json")
+        cmd = [envsetup.env_python(),
+               os.path.join(ROOT, "pywr_reader", "dataview.py"), path, out]
+        if key:
+            cmd.append(key)
+        cmd.append("--series")
+        subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        with open(out) as fh:
+            return json.load(fh)
+
+    def test_series_reads_the_whole_column_downsampled(self):
+        # the plot needs the whole thing, not the head — but thinned so a long
+        # series doesn't ship every point
+        res = self._series(self._make_h5("fixed"), "/flows")
+        self.assertTrue(res["ok"], res.get("error"))
+        self.assertEqual(res["kind"], "series")
+        self.assertEqual(res["n_rows"], 1000)
+        names = [s["name"] for s in res["series"]]
+        self.assertEqual(names, ["river", "gw"])
+        # covers the whole span, first date to last
+        self.assertTrue(res["dates"][0].startswith("1920-01-01"))
+        self.assertTrue(res["dates"][-1].startswith("1922-09-26"))
+        # a 1000-row series is under the plot cap, so it is not thinned
+        self.assertFalse(res["downsampled"])
+        self.assertEqual(len(res["series"][0]["values"]), 1000)
+
+    def test_series_thins_a_long_column(self):
+        # 8000 rows > the 3000-point plot cap → downsampled, last point kept
+        tmp = os.path.join(tempfile.mkdtemp(), "long.h5")
+        subprocess.run([envsetup.env_python(), "-c",
+                        "import pandas as pd, numpy as np;"
+                        "idx=pd.date_range('1900-01-01', periods=8000, freq='D');"
+                        "pd.DataFrame({'v': np.arange(8000.0)}, index=idx)"
+                        f".to_hdf(r'{tmp}', key='s', format='table')"],
+                       capture_output=True, text=True, timeout=300)
+        res = self._series(tmp, "/s")
+        self.assertEqual(res["n_rows"], 8000)
+        self.assertTrue(res["downsampled"])
+        self.assertLessEqual(len(res["series"][0]["values"]), 3001)
+        self.assertEqual(res["series"][0]["values"][-1], 7999.0)   # last kept
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

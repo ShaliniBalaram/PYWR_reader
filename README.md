@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**122 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**125 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -125,11 +125,18 @@ Every node can also be dragged. **Save** writes positions into each node's
 
 **Looking inside the data:** every located file gets a **view** button in
 **Model → Data files** — open the `.h5`, `.xlsx` or `.csv` a model reads and
-see what's actually in it: the keys (or sheets) with their row counts, and the
-first 200 rows of whichever you pick, with real dates and column names. Only
-the head is read, so a 35,000-row, 80-year timeseries opens instantly instead
-of loading into memory. Both flavours of h5 work — the pandas kind, and the
-plain HDF5 that real pywr timeseries files often turn out to be.
+see what's actually in it. Two ways to look:
+
+- **Table** — the keys (or sheets) with their row counts, and the first 200
+  rows of whichever you pick, with real dates and column names. Only the head
+  is read, so a 35,000-row timeseries opens instantly.
+- **Plot** — the whole of a column over time, as a line chart. Tick the
+  columns to overlay (a timeseries file often has dozens), hover to read the
+  values on a date. The full column is read and thinned to fit, so an 80-year
+  daily series draws without shipping every point.
+
+Both flavours of h5 work — the pandas kind, and the plain HDF5 that real pywr
+timeseries files often turn out to be.
 
 This one needs the pywr environment: h5 and xlsx are read with pandas, which
 lives there rather than in the app (which is still Flask and nothing else).
@@ -279,7 +286,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    122 unittest tests
+├── tests/                    125 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
@@ -317,7 +324,7 @@ PYWR_reader/
       renaming a node rewrites every reference to it
 - [x] Export results — whole-run and per-node CSV; save a run beside the
       model and reopen it later
-- [x] Data file viewer — look inside the h5/xlsx/csv a model reads
+- [x] Data file viewer — table or line-plot of the h5/xlsx/csv a model reads
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file, for model suites that
       split the network and its parameters across separate files

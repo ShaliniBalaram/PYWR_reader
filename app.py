@@ -579,36 +579,44 @@ def data_status():
     return jsonify({"ok": True, **_data_payload()})
 
 
-@app.get("/api/data/preview")
-def data_preview():
-    """Look inside one of the model's data files. Reading h5/xlsx needs pandas
-    and PyTables, which live in the pywr environment — so this shells out to
-    it, the way a run does, rather than adding them to the app."""
-    path = request.args.get("path") or ""
-    key = request.args.get("key") or None
-    # only files this model actually references — not an arbitrary file reader
+class _ViewError(Exception):
+    def __init__(self, msg, code=400):
+        super().__init__(msg)
+        self.code = code
+
+
+def _run_dataview(path, key, series=False):
+    """Read a data file via dataview.py in the pywr environment. Reading
+    h5/xlsx needs pandas and PyTables, which live there — so this shells out,
+    the way a run does, rather than adding them to the app.
+
+    Restricted to files the open model actually references — never an
+    arbitrary file reader."""
     allowed = {item["resolved"] for item in
                ((STATE["data"] or {}).get("report") or []) if item.get("resolved")}
     if path not in allowed:
-        return _err("that file is not one of this model's data files", 403)
+        raise _ViewError("that file is not one of this model's data files", 403)
     info = envsetup.check_env()
     if not info["ready"]:
-        return _err("viewing data files needs the pywr environment "
-                    "(h5 and xlsx are read with pandas) — set it up first", 409)
+        raise _ViewError("viewing data files needs the pywr environment "
+                         "(h5 and xlsx are read with pandas) — set it up first",
+                         409)
     out_path = os.path.join(tempfile.gettempdir(),
                             f"pywr_reader_view_{uuid.uuid4().hex[:8]}.json")
     cmd = [info["python"], os.path.join(APP_DIR, "pywr_reader", "dataview.py"),
            path, out_path]
     if key:
         cmd.append(key)
+    if series:
+        cmd.append("--series")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if not os.path.isfile(out_path):
-            return _err(proc.stderr[-800:] or "could not read the file")
+            raise _ViewError(proc.stderr[-800:] or "could not read the file")
         with open(out_path, encoding="utf-8") as fh:
             result = json.load(fh)
     except subprocess.TimeoutExpired:
-        return _err("timed out reading that file")
+        raise _ViewError("timed out reading that file")
     finally:
         if os.path.isfile(out_path):
             try:
@@ -616,8 +624,30 @@ def data_preview():
             except OSError:
                 pass
     if not result.get("ok"):
-        return _err(result.get("error") or "could not read the file")
+        raise _ViewError(result.get("error") or "could not read the file")
     result["path"] = path
+    return result
+
+
+@app.get("/api/data/preview")
+def data_preview():
+    """Look inside one of the model's data files — keys/sheets and a preview."""
+    try:
+        result = _run_dataview(request.args.get("path") or "",
+                               request.args.get("key") or None)
+    except _ViewError as exc:
+        return _err(exc, exc.code)
+    return jsonify(result)
+
+
+@app.get("/api/data/series")
+def data_series():
+    """The whole of a data-file column, downsampled, for a plot."""
+    try:
+        result = _run_dataview(request.args.get("path") or "",
+                               request.args.get("key") or None, series=True)
+    except _ViewError as exc:
+        return _err(exc, exc.code)
     return jsonify(result)
 
 

@@ -1402,9 +1402,18 @@ async function dataViewer(path, basename) {
     placeholder: "Filter keys…" });
   const keyList = el("div", { class: "browser-list" });
   const keyPane = el("div", { class: "dv-keys" }, filter, keyList);
-  const body = el("div", { class: "dv-body" },
+  const tabTable = el("button", { class: "tiny active",
+    onclick: () => setMode("table") }, "Table");
+  const tabPlot = el("button", { class: "tiny",
+    onclick: () => setMode("plot") }, "Plot");
+  const content = el("div", { class: "dv-content" },
     el("p", { class: "muted small" }, "reading…"));
-  let keys = [], current = null;
+  const body = el("div", { class: "dv-body" },
+    el("div", { class: "row gap dv-modes" }, tabTable, tabPlot), content);
+
+  let keys = [], current = null, mode = "table", preview = null;
+  const seriesCache = new Map();      // key -> /api/data/series result
+  const selCols = new Map();          // key -> Set of column names to plot
 
   const renderKeys = () => {
     const q = filter.value.trim().toLowerCase();
@@ -1420,15 +1429,24 @@ async function dataViewer(path, basename) {
       : [el("div", { class: "entry muted" }, "no keys match")]));
   };
 
-  const renderPreview = data => {
-    const p = data.preview;
+  function setMode(m) {
+    mode = m;
+    tabTable.classList.toggle("active", m === "table");
+    tabPlot.classList.toggle("active", m === "plot");
+    render();
+  }
+  const render = () => (mode === "plot" ? renderPlot() : renderTable());
+
+  function renderTable() {
+    const p = preview && preview.preview;
     const parts = [];
-    if (data.note) parts.push(el("p", { class: "muted small" }, data.note));
+    if (preview && preview.note)
+      parts.push(el("p", { class: "muted small" }, preview.note));
     if (!p) {
       parts.push(el("p", { class: "muted small" },
         keys.length ? "Pick a key on the left to see its values."
                     : "Nothing to preview in this file."));
-      body.replaceChildren(...parts);
+      content.replaceChildren(...parts);
       return;
     }
     const table = el("table", { class: "grid dv-table" },
@@ -1441,22 +1459,81 @@ async function dataViewer(path, basename) {
       `${p.n_rows != null ? p.n_rows.toLocaleString() : "?"} rows × ${p.n_cols} `
       + (p.truncated ? `— first ${p.rows.length} shown` : "")),
       el("div", { class: "dv-scroll" }, table));
-    body.replaceChildren(...parts);
-  };
+    content.replaceChildren(...parts);
+  }
+
+  async function renderPlot() {
+    if (!current) {
+      content.replaceChildren(el("p", { class: "muted small" },
+        keys.length ? "Pick a key on the left to plot it." : "Nothing to plot."));
+      return;
+    }
+    const cacheKey = current;
+    let data = seriesCache.get(cacheKey);
+    if (!data) {
+      content.replaceChildren(el("p", { class: "muted small" }, "reading…"));
+      try {
+        data = await api("/api/data/series?path=" + encodeURIComponent(path)
+          + "&key=" + encodeURIComponent(cacheKey));
+        seriesCache.set(cacheKey, data);
+      } catch (err) {
+        content.replaceChildren(el("div", { class: "json-err" }, err.message));
+        return;
+      }
+    }
+    if (mode !== "plot" || current !== cacheKey) return;   // user moved on
+    const names = data.series.map(s => s.name);
+    if (!names.length) {
+      content.replaceChildren(el("p", { class: "muted small" },
+        "No numeric columns to plot in this key."));
+      return;
+    }
+    let sel = selCols.get(cacheKey);
+    if (!sel) { sel = new Set([names[0]]); selCols.set(cacheKey, sel); }
+    const colorFor = nm => RUN_COLORS[names.indexOf(nm) % RUN_COLORS.length];
+    const chartHost = el("div", { class: "dv-charthost" });
+    const chips = el("div", { class: "dv-chips" });
+    const draw = () => {
+      const list = names.filter(nm => sel.has(nm)).map(nm =>
+        ({ name: nm, color: colorFor(nm),
+           values: data.series.find(s => s.name === nm).values }));
+      chartHost.replaceChildren(dataChart(data.dates, list));
+      [...chips.children].forEach(c =>
+        c.classList.toggle("on", sel.has(c.dataset.name)));
+    };
+    chips.replaceChildren(...names.map(nm => el("button", {
+      class: "chip-toggle" + (sel.has(nm) ? " on" : ""), "data-name": nm,
+      onclick: () => {
+        sel.has(nm) ? sel.delete(nm) : sel.add(nm);
+        if (!sel.size) sel.add(nm);      // keep at least one line
+        draw();
+      },
+    }, el("span", { class: "chip-dot", style: `background:${colorFor(nm)}` }), nm)));
+    const notes = [];
+    if (data.downsampled) notes.push(`${data.n_rows.toLocaleString()} rows, thinned to fit`);
+    if (data.cols_truncated)
+      notes.push(`first ${names.length} of ${data.n_series_available} columns`);
+    content.replaceChildren(
+      names.length > 1 ? chips : el("span"),
+      chartHost,
+      notes.length ? el("p", { class: "muted small" }, notes.join(" · ")) : el("span"));
+    draw();
+  }
 
   async function load(key) {
     current = key || null;
     renderKeys();
-    body.replaceChildren(el("p", { class: "muted small" }, "reading…"));
+    content.replaceChildren(el("p", { class: "muted small" }, "reading…"));
     try {
       const data = await api("/api/data/preview?path=" + encodeURIComponent(path)
         + (key ? "&key=" + encodeURIComponent(key) : ""));
       keys = data.keys || [];
       if (data.key) current = data.key;
+      preview = data;
       renderKeys();
-      renderPreview(data);
+      render();
     } catch (err) {
-      body.replaceChildren(el("div", { class: "json-err" }, err.message));
+      content.replaceChildren(el("div", { class: "json-err" }, err.message));
     }
   }
 
@@ -1468,6 +1545,84 @@ async function dataViewer(path, basename) {
   $("modal").classList.add("explorer");
   filter.addEventListener("input", renderKeys);
   load(null);
+}
+
+/** A line chart for a data file — like the node chart, but auto-ranged to the
+ *  data and not tied to the run timeline (a data file has no run cursor). */
+function dataChart(dates, seriesList) {
+  const W = 640, H = 250, m = { l: 56, r: 12, t: 10, b: 26 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const n = dates.length;
+  let lo = Infinity, hi = -Infinity;
+  for (const s of seriesList) for (const v of s.values) {
+    if (v == null) continue;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+  if (hi === lo) { hi = lo + 1; lo -= 1; }
+  const pad = (hi - lo) * 0.05; lo -= pad; hi += pad;   // auto-range, not 0-based
+  const X = i => m.l + (i / Math.max(1, n - 1)) * iw;
+  const Y = v => m.t + ih - ((v - lo) / (hi - lo)) * ih;
+
+  const box = el("div", { class: "chart-box dv-chart" });
+  const readout = el("div", { class: "dv-readout muted small" },
+    "hover the chart to read values");
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "dv-svg" });
+
+  for (let i = 0; i <= 4; i++) {                        // y gridlines + ticks
+    const v = lo + ((hi - lo) * i) / 4, y = Y(v);
+    svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y, y2: y,
+      stroke: i === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: m.l - 6, y: y + 3, "text-anchor": "end",
+      fill: "var(--muted)", "font-size": 10 });
+    t.textContent = fmt(v);
+    svg.append(t);
+  }
+  for (let i = 0; i < 5; i++) {                          // x ticks (dates)
+    const idx = Math.round((i / 4) * (n - 1));
+    const t = svgEl("text", { x: X(idx), y: H - 8, fill: "var(--muted)",
+      "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle",
+      "font-size": 10 });
+    t.textContent = (dates[idx] || "").slice(0, 10);
+    svg.append(t);
+  }
+  for (const s of seriesList) {                          // one path per series
+    let d = "", started = false;
+    const step = Math.max(1, Math.floor(s.values.length / 1400));
+    for (let i = 0; i < s.values.length; i += step) {
+      const v = s.values[i];
+      if (v == null) { started = false; continue; }      // gap over NaNs
+      d += (started ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1);
+      started = true;
+    }
+    svg.append(svgEl("path", { d, fill: "none", stroke: s.color,
+      "stroke-width": 1.5, "stroke-linejoin": "round" }));
+  }
+  const guide = svgEl("line", { y1: m.t, y2: m.t + ih, stroke: "var(--ink)",
+    "stroke-dasharray": "3 3", "stroke-width": 1, opacity: 0 });
+  svg.append(guide);
+  const hit = svgEl("rect", { x: m.l, y: m.t, width: iw, height: ih,
+    fill: "transparent", style: "cursor:crosshair" });
+  hit.addEventListener("mousemove", e => {
+    const r = svg.getBoundingClientRect();
+    let idx = Math.round((((e.clientX - r.left) * (W / r.width) - m.l) / iw)
+                         * (n - 1));
+    idx = Math.max(0, Math.min(n - 1, idx));
+    guide.setAttribute("x1", X(idx));
+    guide.setAttribute("x2", X(idx));
+    guide.setAttribute("opacity", 0.5);
+    readout.replaceChildren(
+      el("span", { class: "mono" }, (dates[idx] || "").slice(0, 10)),
+      ...seriesList.map(s => el("span", { class: "dv-rv" },
+        el("span", { class: "chip-dot", style: `background:${s.color}` }),
+        el("span", { class: "mono" },
+          s.values[idx] == null ? "—" : fmt(s.values[idx])))));
+  });
+  hit.addEventListener("mouseleave", () => guide.setAttribute("opacity", 0));
+  svg.append(hit);
+  box.append(readout, svg);
+  return box;
 }
 
 function dataFilesBlock(data) {

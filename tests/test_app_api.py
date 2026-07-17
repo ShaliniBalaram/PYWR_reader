@@ -239,6 +239,12 @@ class TestApi(unittest.TestCase):
         r = self.c.get("/api/data/preview?path=/anything.h5")
         self.assertEqual(r.status_code, 403)
 
+    def test_data_series_shares_the_same_access_guard(self):
+        # the plot endpoint is no more of a file reader than the preview one
+        self._open_example()
+        r = self.c.get("/api/data/series?path=/etc/hosts")
+        self.assertEqual(r.status_code, 403)
+
     def test_data_preview_allows_a_referenced_file(self):
         # params.csv sits beside the example and is referenced by it, so it
         # passes the allow-list — it then needs the pywr env to actually read

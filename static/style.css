@@ -51,6 +51,24 @@ body {
 .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .run-item .tiny { padding: 1px 6px; }
 
+/* data file plot */
+.dv-modes { margin-bottom: 8px; }
+.dv-modes .tiny.active { background: #1c5cab; border-color: #2a78d6; color: #fff; }
+.dv-content { min-height: 200px; }
+.dv-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; max-height: 88px; overflow-y: auto; }
+.chip-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; font-size: 11px; border-radius: 99px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--muted);
+}
+.chip-toggle.on { color: var(--ink); border-color: var(--baseline); background: #2d2d2b; }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; opacity: 0.35; }
+.chip-toggle.on .chip-dot { opacity: 1; }
+.dv-svg { width: 100%; height: auto; display: block; }
+.dv-readout { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px; min-height: 16px; }
+.dv-rv { display: inline-flex; align-items: center; gap: 4px; }
+
 /* data file viewer */
 .dv-wrap { display: flex; gap: 10px; align-items: flex-start; }
 .dv-keys { width: 290px; flex: none; }
