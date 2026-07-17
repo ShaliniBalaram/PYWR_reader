@@ -1464,25 +1464,27 @@ async function dataViewer(path, basename) {
   }
 
   async function renderPlot() {
-    if (!current) {
+    if (keys.length && !current) {          // a multi-key file, none picked yet
       content.replaceChildren(el("p", { class: "muted small" },
-        keys.length ? "Pick a key on the left to plot it." : "Nothing to plot."));
+        "Pick a key on the left to plot it."));
       return;
     }
-    const cacheKey = current;
+    // a csv/single-sheet has no key at all — plot its columns directly
+    const startedKey = current;
+    const cacheKey = current || "__whole__";
+    const keyQ = current ? "&key=" + encodeURIComponent(current) : "";
     let overview = seriesCache.get(cacheKey);          // full range, thinned
     if (!overview) {
       content.replaceChildren(el("p", { class: "muted small" }, "reading…"));
       try {
-        overview = await api("/api/data/series?path=" + encodeURIComponent(path)
-          + "&key=" + encodeURIComponent(cacheKey));
+        overview = await api("/api/data/series?path=" + encodeURIComponent(path) + keyQ);
         seriesCache.set(cacheKey, overview);
       } catch (err) {
         content.replaceChildren(el("div", { class: "json-err" }, err.message));
         return;
       }
     }
-    if (mode !== "plot" || current !== cacheKey) return;   // user moved on
+    if (mode !== "plot" || current !== startedKey) return;   // user moved on
     const names = overview.series.map(s => s.name);
     if (!names.length) {
       content.replaceChildren(el("p", { class: "muted small" },
@@ -1545,8 +1547,8 @@ async function dataViewer(path, basename) {
       status.textContent = " · loading detail…";
       try {
         const win = await api("/api/data/series?path=" + encodeURIComponent(path)
-          + "&key=" + encodeURIComponent(cacheKey) + "&start=" + s + "&stop=" + e);
-        if (seq !== fetchSeq || mode !== "plot" || current !== cacheKey) return;
+          + keyQ + "&start=" + s + "&stop=" + e);
+        if (seq !== fetchSeq || mode !== "plot" || current !== startedKey) return;
         chunk = win;
         renderChart();
       } catch { /* keep the coarser view */ }

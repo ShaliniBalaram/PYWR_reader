@@ -183,9 +183,27 @@ PLOT_POINTS = 3000      # a line this long already exceeds the pixels it draws o
 MAX_PLOT_COLS = 40
 
 
-def _read_full(path, key=None):
-    """The whole frame for a key — for plotting, where the head would show only
-    the first weeks of an 80-year series. Returns (frame, n_rows)."""
+def _clampwin(n, start, stop):
+    s = 0 if start is None else max(0, min(int(start), n))
+    e = n if stop is None else max(s, min(int(stop), n))
+    return s, e
+
+
+def _count_csv_rows(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return max(sum(1 for _ in fh) - 1, 0)       # minus the header
+
+
+def _read_window(path, key=None, start=None, stop=None):
+    """Read one row window for plotting, and the file's total row count.
+    Returns (window_frame, n_rows, win_start, win_stop).
+
+    Reads only the requested rows from disk where the format allows it — a
+    plain HDF5 dataset and an h5 *table* store both support partial reads, so a
+    deep zoom into a big file stays cheap. Fixed-format h5 and spreadsheets
+    can't windowed-read, so they're read whole and sliced (they're the smaller
+    cases in practice). A csv is scanned once for its length, then only the
+    requested rows are parsed."""
     import pandas as pd
     lower = path.lower()
     if lower.endswith((".h5", ".hdf5", ".hdf")):
@@ -197,26 +215,41 @@ def _read_full(path, key=None):
                 target = key or (keys[0] if len(keys) == 1 else None)
                 if target is None:
                     raise ValueError("this file has several keys — pick one")
-                frame = _series_to_frame(store.get(target))
-                return frame, len(frame)
+                n = _storer_rows(store.get_storer(target)) or 0
+                s, e = _clampwin(n, start, stop)
+                try:                       # table format: read just the window
+                    frame = store.select(target, start=s, stop=e)
+                except (TypeError, ValueError, NotImplementedError):
+                    frame = store.get(target).iloc[s:e]       # fixed: read all
+                return _series_to_frame(frame), n, s, e
         except Exception:               # noqa: BLE001 — plain HDF5, use tables
             import tables
             with tables.open_file(path, mode="r") as fh:
                 leaf = fh.get_node(key) if key else None
                 if leaf is None:
                     raise ValueError("this file has several keys — pick one")
-                frame = pd.DataFrame(leaf.read())
+                n = int(leaf.shape[0]) if leaf.shape else 0
+                s, e = _clampwin(n, start, stop)
+                frame = pd.DataFrame(leaf.read(s, e))         # windowed read
                 if list(frame.columns) == [0]:
                     frame.columns = ["value"]
-                return frame, len(frame)
+                frame.index = range(s, s + len(frame))        # absolute rows
+                return frame, n, s, e
     if lower.endswith((".xlsx", ".xls", ".xlsm")):
         book = pd.ExcelFile(path)
         sheet = key if key in book.sheet_names else book.sheet_names[0]
-        frame = book.parse(sheet)
-        return _index_by_first_label(frame), len(frame)
+        frame = _index_by_first_label(book.parse(sheet))
+        n = len(frame)
+        s, e = _clampwin(n, start, stop)
+        return frame.iloc[s:e], n, s, e
     if lower.endswith((".csv", ".txt")):
-        frame = pd.read_csv(path)
-        return _index_by_first_label(frame), len(frame)
+        n = _count_csv_rows(path)
+        s, e = _clampwin(n, start, stop)
+        if start is None and stop is None:
+            frame = pd.read_csv(path)
+        else:                               # keep the header, skip to the window
+            frame = pd.read_csv(path, skiprows=range(1, s + 1), nrows=e - s)
+        return _index_by_first_label(frame), n, s, e
     raise ValueError(f"can't plot a {path.rsplit('.', 1)[-1]} file")
 
 
@@ -238,12 +271,7 @@ def read_series(path, key=None, start=None, stop=None):
     row in view (daily detail) rather than magnifying the thinned overview.
     Each returned point carries its absolute row, so the client can place it
     however the chunks are stitched together."""
-    frame, n_rows = _read_full(path, key)
-    lo = 0 if start is None else max(0, int(start))
-    hi = n_rows if stop is None else min(n_rows, int(stop))
-    if hi <= lo:
-        hi = min(n_rows, lo + 1)
-    window = frame.iloc[lo:hi]
+    window, n_rows, win_start, win_stop = _read_window(path, key, start, stop)
 
     numeric = window.select_dtypes(include="number")
     all_cols = list(numeric.columns)
@@ -269,10 +297,10 @@ def read_series(path, key=None, start=None, stop=None):
         "series": [{"name": str(c),
                     "values": [_cell(v) for v in kept[c].tolist()]}
                    for c in cols],
-        "rows": [lo + p for p in pos],          # absolute row of each point
+        "rows": [win_start + p for p in pos],   # absolute row of each point
         "n_rows": int(n_rows),
-        "start": int(lo),
-        "stop": int(hi),
+        "start": int(win_start),
+        "stop": int(win_stop),
         "downsampled": downsampled,
         "cols_truncated": len(all_cols) > MAX_PLOT_COLS,
         "n_series_available": len(all_cols),

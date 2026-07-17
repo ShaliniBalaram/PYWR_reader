@@ -245,6 +245,22 @@ class TestApi(unittest.TestCase):
         r = self.c.get("/api/data/series?path=/etc/hosts")
         self.assertEqual(r.status_code, 403)
 
+    def test_data_series_without_a_key_is_allowed(self):
+        # a csv has no key — the plot must still be able to request it
+        self._open_example()
+        resolved = [i["resolved"] for i in
+                    self.c.get("/api/data").get_json()["report"]]
+        r = self.c.get("/api/data/series?path=" + resolved[0])   # no &key
+        self.assertNotEqual(r.status_code, 403)                  # not refused
+        # 200 if pywr is set up, 409 if not — either way it got past the guard
+
+    def test_data_series_rejects_non_integer_window(self):
+        self._open_example()
+        resolved = self.c.get("/api/data").get_json()["report"][0]["resolved"]
+        r = self.c.get("/api/data/series?path=" + resolved
+                       + "&start=x&stop=y")
+        self.assertEqual(r.status_code, 400)
+
     def test_data_preview_allows_a_referenced_file(self):
         # params.csv sits beside the example and is referenced by it, so it
         # passes the allow-list — it then needs the pywr env to actually read

@@ -208,6 +208,27 @@ class TestDataView(unittest.TestCase):
         self.assertEqual(res["rows"][1] - res["rows"][0], 1)   # every day
         self.assertEqual(len(res["rows"]), 300)
 
+    def test_series_reads_a_csv_and_windows_it(self):
+        # csv has no key; its columns plot directly, and a window reads only
+        # those rows (skiprows) at full detail with absolute indices
+        csv = os.path.join(ROOT, "examples", "gw_network", "params.csv")
+        full = self._series(csv)
+        self.assertTrue(full["ok"], full.get("error"))
+        self.assertGreater(full["n_rows"], 300)
+        self.assertIn("Rainfall_Flow", [s["name"] for s in full["series"]])
+
+        out = os.path.join(tempfile.mkdtemp(), "w.json")
+        subprocess.run([envsetup.env_python(),
+                        os.path.join(ROOT, "pywr_reader", "dataview.py"),
+                        csv, out, "--series", "--start", "10", "--stop", "40"],
+                       capture_output=True, text=True, timeout=120)
+        with open(out) as fh:
+            win = json.load(fh)
+        self.assertEqual((win["start"], win["stop"]), (10, 40))
+        self.assertEqual(win["rows"][0], 10)
+        self.assertEqual(win["rows"][-1], 39)
+        self.assertFalse(win["downsampled"])
+
     def test_series_thins_a_long_column(self):
         # 8000 rows > the 3000-point plot cap → downsampled, last point kept
         tmp = os.path.join(tempfile.mkdtemp(), "long.h5")
