@@ -8,6 +8,7 @@ self-contained and does not depend on any file outside the release.
 
 import gzip
 import json
+import math
 import os
 import sys
 import tempfile
@@ -385,6 +386,75 @@ class TestScenarios(unittest.TestCase):
         self.assertEqual(summary["n_combinations"], 6)
         self.assertEqual([d["name"] for d in summary["scenario_dims"]],
                          ["climate", "demand"])
+
+
+class TestLayoutPicker(unittest.TestCase):
+    """The named layouts offered by the picker. A zone model funnels many
+    sources into one row, so 'layered' is not always the readable choice."""
+
+    # two sources feeding a chain, plus an edge-less virtual node
+    NAMES = ["src_a", "src_b", "river", "resr", "town", "farm", "licence"]
+    EDGES = [["src_a", "river"], ["src_b", "river"], ["river", "resr"],
+             ["resr", "town"], ["resr", "farm"]]
+    TYPES = {"src_a": "catchment", "src_b": "input", "river": "river",
+             "resr": "reservoir", "town": "output", "farm": "output",
+             "licence": "annualvirtualstorage"}
+
+    def _groups(self):
+        return {n: layout.node_group(t) for n, t in self.TYPES.items()}
+
+    def test_node_group_classification(self):
+        self.assertEqual(layout.node_group("catchment"), "source")
+        self.assertEqual(layout.node_group("reservoir"), "storage")
+        self.assertEqual(layout.node_group("output"), "demand")
+        self.assertEqual(layout.node_group("annualvirtualstorage"), "virtual")
+        self.assertEqual(layout.node_group("riversplit"), "river")
+        self.assertEqual(layout.node_group("keatingaquifer"), "other")
+
+    def test_every_layout_places_every_node(self):
+        for kind in layout.LAYOUT_KINDS:
+            pos = layout.compute(kind, self.NAMES, self.EDGES,
+                                 groups=self._groups())
+            self.assertEqual(set(pos), set(self.NAMES), kind)
+            for name, xy in pos.items():
+                self.assertEqual(len(xy), 2, f"{kind}/{name}")
+
+    def test_layouts_are_deterministic(self):
+        # no RNG anywhere: the same model must lay out identically every time
+        for kind in layout.LAYOUT_KINDS:
+            first = layout.compute(kind, self.NAMES, self.EDGES,
+                                   groups=self._groups())
+            again = layout.compute(kind, self.NAMES, self.EDGES,
+                                   groups=self._groups())
+            self.assertEqual(first, again, kind)
+
+    def test_unknown_kind_falls_back_to_layered(self):
+        self.assertEqual(layout.compute("nonsense", self.NAMES, self.EDGES),
+                         layout.compute("layered", self.NAMES, self.EDGES))
+
+    def test_grouped_keeps_a_group_in_one_block(self):
+        pos = layout.compute("grouped", self.NAMES, self.EDGES,
+                             groups=self._groups())
+        # sources share a block, demands share a block, and the blocks are
+        # laid out left→right in GROUP_ORDER (source before demand)
+        src_x = [pos[n][0] for n in ("src_a", "src_b")]
+        demand_x = [pos[n][0] for n in ("town", "farm")]
+        self.assertLess(max(src_x), min(demand_x))
+
+    def test_force_layout_spaces_nodes_out(self):
+        pos = layout.compute("force", self.NAMES, self.EDGES)
+        pts = list(pos.values())
+        gaps = [math.dist(a, b) for i, a in enumerate(pts)
+                for b in pts[i + 1:]]
+        # the spring embedding is renormalised to the usual node spacing, so
+        # nothing should end up stacked on top of anything else
+        self.assertGreater(min(gaps), 1.0)
+
+    def test_radial_rings_grow_outwards(self):
+        pos = layout.compute("radial", self.NAMES, self.EDGES)
+        # sources sit on an inner ring, demands further out
+        r = lambda n: math.hypot(*pos[n])  # noqa: E731
+        self.assertLess(r("src_a"), r("town"))
 
 
 class TestEdgeProxies(unittest.TestCase):

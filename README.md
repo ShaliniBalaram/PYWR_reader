@@ -55,7 +55,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-61 tests, using only Python's stdlib `unittest`. Unit + API tests need just
+71 tests, using only Python's stdlib `unittest`. Unit + API tests need just
 Flask; the integration tests that actually execute a model with pywr skip
 themselves automatically until the pywr environment exists.
 
@@ -70,11 +70,27 @@ themselves automatically until the pywr environment exists.
 | **`nodes.csv`** (Graph Overlay format) | Imports the node table plus the sibling `nodes_edges.csv`. |
 
 **Positions:** if a model has none — or they're junk (many nodes stacked on
-one default coordinate, as pywr-editor leaves them) — a layered auto-layout
-is computed: sources at the top, demands at the bottom, licence/virtual nodes
-parked beside the nodes they monitor. The **Auto-layout** button recomputes
-at any time, and every node can be dragged. **Save** writes positions into
-each node's `position.schematic`, so the file stays a valid pywr model.
+one default coordinate, as pywr-editor leaves them) — a layout is computed
+automatically: sources at the top, demands at the bottom, licence/virtual
+nodes parked beside the nodes they monitor.
+
+No single layout suits every network, so **Layout ▾** offers four and applies
+the one you pick instantly (**Undo** puts the positions back):
+
+| Layout | Best for |
+|---|---|
+| **Layered (flow)** | The default. Sources top, demands bottom — follows the water. |
+| **Force-directed** | Meshy networks, and zone models where layered funnels 40 sources into one unreadable row. A spring embedding untangles them. |
+| **Grouped by function** | A structural overview: blocks of source / river / storage / link / demand / virtual, left to right. |
+| **Radial** | Wide, shallow networks — rings by distance from the sources. |
+
+These are the same algorithms networkx would give you, implemented against the
+standard library so layout still works on a bare checkout (networkx's
+`spring_layout` needs numpy, `kamada_kawai` needs scipy). All are
+deterministic — a model always lays out the same way.
+
+Every node can also be dragged. **Save** writes positions into each node's
+`position.schematic`, so the file stays a valid pywr model.
 
 **External data files:** real models point `tables`/`parameters` at data files
 by absolute paths from another machine (`C:\Data\...\SEW_RZ5.xlsx`). On open,
@@ -102,8 +118,9 @@ remapped only for the run.
 ## Editing
 
 - **New** — start an empty model to build from scratch or trace over an image.
-- **+ Node** — click the canvas, name it, pick a type.
-- **+ Edge** — click source node, then destination.
+- **+ Add ▾** — one menu for both: **Node** (pick the type under it, then click
+  the canvas) or **Edge** (click source node, then destination). The button
+  shows what you're placing until you switch back to **Select**.
 - Rename (references in parameters/recorders are updated too), change type,
   edit/add/remove parameters (values are JSON — numbers or `{…}` parameter
   definitions), delete nodes/edges (with warnings if something still
@@ -191,13 +208,13 @@ PYWR_reader/
 ├── app.py                    Flask app + API
 ├── pywr_reader/
 │   ├── model_io.py           pywr JSON / .tcm / CSV readers, writers
-│   ├── layout.py             layered auto-layout (no dependencies)
+│   ├── layout.py             layered / force / grouped / radial layouts (no deps)
 │   ├── graphops.py           trace, add/delete/rename, reference rewriting
 │   ├── dataresolve.py        locate external data files by basename
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    61 unittest tests (unit + API + integration)
+├── tests/                    71 unittest tests (unit + API + integration)
 ├── examples/gw_network/      small self-contained runnable demo
 ├── examples/scenario_network/  runnable demo with a pywr scenario ensemble
 ├── examples/split_network/   runnable demo with an ambiguous split/junction edge
@@ -223,6 +240,10 @@ PYWR_reader/
       ensemble member to view; run several and overlay them to compare
 - [x] Per-edge exact flows at splits/junctions — a transparent proxy link is
       spliced onto ambiguous edges so pywr records their exact flow
+- [x] Layout picker — layered / force-directed / grouped / radial, applied
+      instantly with Undo, for models that ship no usable schematic positions
 - [ ] GeoJSON/Shapefile import for geographic networks
+- [ ] Open a submodel together with its inputs file (compose a
+      `wrse_simulator`-style fragment into a runnable model)
 
 Author: Shalini B

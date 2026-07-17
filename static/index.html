@@ -15,15 +15,34 @@
   <button id="btn-save" title="Save model JSON (positions included)">Save</button>
   <button id="btn-saveas">Save As</button>
   <span class="sep"></span>
-  <button id="btn-layout" title="Recompute all positions">Auto-layout</button>
+  <div class="menu-wrap">
+    <button id="btn-layout" class="menu-btn" title="Recompute all positions">Layout ▾</button>
+    <div id="layout-menu" class="menu hidden"></div>
+  </div>
+  <button id="btn-undo-layout" class="hidden" title="Put the positions back as they were">Undo</button>
   <button id="btn-fit" title="Fit network in view">Fit</button>
   <button id="btn-trace" title="Load a map / schematic image to trace the network over">Trace image</button>
   <input id="trace-file" type="file" accept="image/*" class="hidden">
   <span class="sep"></span>
   <button id="btn-mode-select" class="mode active" title="Select / move nodes">Select</button>
-  <button id="btn-mode-addnode" class="mode" title="Click canvas to add a node">+ Node</button>
-  <select id="add-node-type" title="Type for new nodes"></select>
-  <button id="btn-mode-addedge" class="mode" title="Click source node, then destination">+ Edge</button>
+  <div class="menu-wrap">
+    <button id="btn-add" class="menu-btn" title="Add a node or an edge">+ Add ▾</button>
+    <div id="add-menu" class="menu hidden">
+      <button id="btn-mode-addnode" class="menu-item mode"
+              title="Click the canvas to place a node">
+        <span class="menu-label">Node</span>
+        <span class="menu-hint">then click the canvas to place it</span>
+      </button>
+      <label class="menu-row" title="Type for new nodes">Type
+        <select id="add-node-type"></select>
+      </label>
+      <button id="btn-mode-addedge" class="menu-item mode"
+              title="Click the source node, then the destination">
+        <span class="menu-label">Edge</span>
+        <span class="menu-hint">then click source, then destination</span>
+      </button>
+    </div>
+  </div>
   <span class="sep"></span>
   <button id="btn-run" class="primary" title="Run the model with pywr">▶ Run</button>
   <span id="env-chip" class="chip">checking…</span>

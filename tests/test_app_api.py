@@ -239,6 +239,39 @@ class TestApi(unittest.TestCase):
         self.assertEqual(data["n_combinations"], 1)
         self.assertEqual(data["scenario_dims"], [])
 
+    def test_layouts_endpoint_lists_the_picker_options(self):
+        data = self.c.get("/api/layouts").get_json()
+        self.assertTrue(data["ok"])
+        kinds = [spec["kind"] for spec in data["layouts"]]
+        self.assertIn("layered", kinds)
+        self.assertIn("force", kinds)
+        # every entry needs a label + hint for the dropdown to render
+        for spec in data["layouts"]:
+            self.assertTrue(spec["label"] and spec["hint"], spec)
+
+    def test_layout_accepts_a_kind(self):
+        n_nodes = len(self._open_example().get_json()["nodes"])
+        seen = []
+        for kind in ("layered", "grouped", "radial"):
+            res = self.c.post("/api/layout", json={"mode": "all",
+                                                   "kind": kind})
+            self.assertEqual(res.status_code, 200, kind)
+            nodes = res.get_json()["nodes"]
+            # every node comes back placed
+            self.assertEqual(len(nodes), n_nodes, kind)
+            for node in nodes:
+                self.assertEqual(len(node["pos"]), 2, f"{kind}/{node['name']}")
+            seen.append(sorted(tuple(n["pos"]) for n in nodes))
+        # the kinds actually produce different arrangements
+        self.assertNotEqual(seen[0], seen[1])
+
+    def test_layout_rejects_unknown_kind(self):
+        self._open_example()
+        res = self.c.post("/api/layout", json={"mode": "all",
+                                               "kind": "spirograph"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("spirograph", res.get_json()["error"])
+
     def test_edge_flows_prefer_recorded_exact(self):
         # A->B is ambiguous; the endpoint min-estimate would be 50, but the
         # runner-recorded exact_edges wins and marks the edge exact

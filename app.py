@@ -286,14 +286,23 @@ def export_csv():
 # ---------------------------------------------------------------------------
 # Layout / positions
 # ---------------------------------------------------------------------------
+@app.get("/api/layouts")
+def list_layouts():
+    """The layouts the picker can offer (label + hint come from layout.py)."""
+    return jsonify({"ok": True, "layouts": layout_mod.LAYOUTS})
+
+
 @app.post("/api/layout")
 def relayout():
     body = request.get_json(force=True)
     mode = body.get("mode", "all")
+    kind = body.get("kind") or "layered"
     try:
         _require_model()
     except ValueError as exc:
         return _err(exc)
+    if mode != "missing" and kind not in layout_mod.LAYOUT_KINDS:
+        return _err(f"unknown layout {kind!r}")
     with LOCK:
         model = STATE["model"]
         names = [n["name"] for n in model.get("nodes", [])]
@@ -301,9 +310,11 @@ def relayout():
             STATE["positions"] = layout_mod.layout_missing(
                 names, model.get("edges", []), STATE["positions"])
         else:
-            STATE["positions"] = layout_mod.auto_layout(
-                names, model.get("edges", []),
-                affinity=graphops.node_affinity(model))
+            groups = {n["name"]: layout_mod.node_group(n.get("type", ""))
+                      for n in model.get("nodes", [])}
+            STATE["positions"] = _normalize_positions(layout_mod.compute(
+                kind, names, model.get("edges", []),
+                affinity=graphops.node_affinity(model), groups=groups))
         STATE["dirty"] = True
         STATE["layout_was_auto"] = True
     return jsonify(_graph_payload())

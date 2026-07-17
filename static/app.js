@@ -24,6 +24,7 @@ const S = {
   scenarioSel: [],        // per-scenario-dimension selected member index
   showEdgeValues: true,   // draw flow numbers on the selected path during a run
   labelEdges: new Set(),  // edge indices to label (selected node's path)
+  layoutUndo: null,       // positions before the last layout, for Undo
   seriesCache: new Map(), // `${runId}|${node}` -> series payload
   bg: null,               // trace image {src,x,y,scale,opacity,locked,natW,natH}
   quickPlace: false,      // place traced nodes without the dialog
@@ -425,6 +426,12 @@ function setMode(mode) {
   for (const id of ["select", "addnode", "addedge"]) {
     $("btn-mode-" + id).classList.toggle("active", id === mode);
   }
+  // the Add button carries what you're placing, so the mode stays visible
+  // once its menu is closed
+  const add = $("btn-add");
+  add.classList.toggle("active", mode === "addnode" || mode === "addedge");
+  add.textContent = (mode === "addnode" ? "+ Node"
+                   : mode === "addedge" ? "+ Edge" : "+ Add") + " ▾";
   canvas.style.cursor = mode === "select" ? "default" : "crosshair";
   hint();
 }
@@ -1971,19 +1978,73 @@ function rehomeBgAfterSave(prevKey) {
   }
 }
 $("btn-saveas").addEventListener("click", () => S.graph && saveAsModal());
-$("btn-layout").addEventListener("click", async () => {
-  if (!S.graph) return;
+/* ------------------------------------------------------- toolbar menus */
+function closeMenus(except) {
+  document.querySelectorAll(".menu").forEach(m => {
+    if (m !== except) m.classList.add("hidden");
+  });
+}
+function toggleMenu(id) {
+  const menu = $(id);
+  const show = menu.classList.contains("hidden");
+  closeMenus(menu);
+  menu.classList.toggle("hidden", !show);
+}
+// a click anywhere else dismisses an open menu
+document.addEventListener("click", e => {
+  if (!e.target.closest(".menu-wrap")) closeMenus();
+});
+
+/** Fill the Layout menu from the server's list (layout.py is the one source
+ *  of truth for which layouts exist and what they're called). */
+async function loadLayouts() {
   try {
-    updateGraph(await api("/api/layout", { mode: "all" }));
+    const { layouts } = await api("/api/layouts");
+    $("layout-menu").replaceChildren(...layouts.map(spec => el("button", {
+      class: "menu-item", title: spec.hint,
+      onclick: () => applyLayout(spec.kind, spec.label),
+    }, el("span", { class: "menu-label" }, spec.label),
+       el("span", { class: "menu-hint" }, spec.hint))));
+  } catch { /* picker just stays empty if the server is unhappy */ }
+}
+
+async function applyLayout(kind, label) {
+  closeMenus();
+  if (!S.graph) return;
+  const before = Object.fromEntries(
+    Object.entries(S.positions).map(([k, v]) => [k, [...v]]));
+  try {
+    updateGraph(await api("/api/layout", { mode: "all", kind }));
     fitView();
+    S.layoutUndo = before;                 // only offer Undo once one worked
+    $("btn-undo-layout").classList.remove("hidden");
+    toast(`${label} layout applied`);
+  } catch (err) { toast(err.message, true); }
+}
+
+$("btn-layout").addEventListener("click", () => toggleMenu("layout-menu"));
+$("btn-undo-layout").addEventListener("click", async () => {
+  if (!S.layoutUndo) return;
+  try {
+    await api("/api/positions", { positions: S.layoutUndo });
+    updateGraph(await api("/api/graph"));
+    fitView();
+    S.layoutUndo = null;
+    $("btn-undo-layout").classList.add("hidden");
+    toast("Positions restored");
   } catch (err) { toast(err.message, true); }
 });
 $("btn-fit").addEventListener("click", fitView);
+$("btn-add").addEventListener("click", () => toggleMenu("add-menu"));
 $("btn-mode-select").addEventListener("click", () => setMode("select"));
-$("btn-mode-addnode").addEventListener("click", () =>
-  setMode(S.mode === "addnode" ? "select" : "addnode"));
-$("btn-mode-addedge").addEventListener("click", () =>
-  setMode(S.mode === "addedge" ? "select" : "addedge"));
+$("btn-mode-addnode").addEventListener("click", () => {
+  setMode(S.mode === "addnode" ? "select" : "addnode");
+  closeMenus();
+});
+$("btn-mode-addedge").addEventListener("click", () => {
+  setMode(S.mode === "addedge" ? "select" : "addedge");
+  closeMenus();
+});
 $("btn-run").addEventListener("click", () => startRun(null, null, currentScenarioIndex()));
 $("btn-run2").addEventListener("click", () => startRun(null, null, currentScenarioIndex()));
 $("btn-run-whatif").addEventListener("click", () =>
@@ -2024,7 +2085,7 @@ window.addEventListener("resize", applyView);
   applyView();
   setMode("select");
   renderWhatIf();
-  await Promise.all([refreshGraph(), refreshEnv(), refreshRuns()]);
+  await Promise.all([refreshGraph(), refreshEnv(), refreshRuns(), loadLayouts()]);
   loadBgForModel();   // restore a trace image saved for this model
   // wait for CSS layout to settle before measuring the canvas
   if (S.graph) requestAnimationFrame(() => requestAnimationFrame(fitView));
