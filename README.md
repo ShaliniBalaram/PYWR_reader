@@ -286,8 +286,16 @@ Turn a picture of a water network into a pywr model:
 
 ```
 PYWR_reader/
-├── app.py                    Flask app + API
+├── app.py                    thin entry point — builds Flask, registers blueprints
 ├── pywr_reader/
+│   ├── session.py            Workspace + RunStore — the open model and its runs
+│   ├── api/                  route blueprints, registered by app.py
+│   │   ├── files.py              open / save / browse / graph / edit-as-JSON
+│   │   ├── edit.py               layouts, node/edge CRUD, path tracing
+│   │   ├── datafiles.py          locate, preview and plot external data files
+│   │   ├── traceimg.py           the trace-over-image sidecar
+│   │   ├── env.py                pywr environment status + one-click setup
+│   │   └── runs.py               run a model; CSV export; save / open a run
 │   ├── model_io.py           pywr JSON / .tcm / CSV readers, writers
 │   ├── layout.py             layered / force / grouped / radial layouts (no deps)
 │   ├── graphops.py           trace, add/delete/rename, reference rewriting
@@ -299,12 +307,13 @@ PYWR_reader/
 ├── tests/                    132 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
-│   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)
+│   ├── test_frontend_contract.py app.js vs index.html vs the API (no deps)
 │   ├── test_frontend_smoke.py    the real UI in a browser (needs playwright)
+│   ├── test_perf.py              a 1,200-node model stays responsive
 │   └── test_run_integration.py   really runs pywr (needs .pywr-env)
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
-├── requirements-dev.txt      playwright, for the optional browser tests
+├── requirements-dev.txt      ruff + playwright, for dev/tests
 ├── LICENSE                   MIT
 ├── run_tests.sh              test runner
 └── .pywr-env/                private pywr environment (created on demand)

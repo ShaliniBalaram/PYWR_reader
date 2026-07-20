@@ -23,6 +23,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import app as app_module  # noqa: E402
+from pywr_reader import layout  # noqa: E402
+from pywr_reader.api import files  # noqa: E402
 
 EXAMPLE = os.path.join(ROOT, "examples", "gw_network", "pywr_model.json")
 
@@ -155,7 +157,7 @@ class TestFrontendSmoke(unittest.TestCase):
 
     # -- layout picker --------------------------------------------------
     def test_layout_menu_lists_every_layout_the_server_offers(self):
-        kinds = len(app_module.layout_mod.LAYOUTS)
+        kinds = len(layout.LAYOUTS)
         self.page.click("#btn-layout")
         self.assertEqual(self.page.locator("#layout-menu .menu-item").count(),
                          kinds)
@@ -163,7 +165,7 @@ class TestFrontendSmoke(unittest.TestCase):
 
     def test_each_layout_applies_and_moves_the_nodes(self):
         seen = []
-        for spec in app_module.layout_mod.LAYOUTS:
+        for spec in layout.LAYOUTS:
             self._apply_layout(spec["label"])
             box = self._bbox()
             self.assertTrue(all(v > 0 for v in box), spec["kind"])
@@ -213,7 +215,7 @@ class TestFrontendSmoke(unittest.TestCase):
         # the shortcuts must be whatever the server's platform offers —
         # a hard-coded "Volumes" button left Windows unable to reach a drive
         self._open_dialog()
-        expected = [r["label"] for r in app_module._browse_roots()]
+        expected = [r["label"] for r in files.browse_roots()]
         shown = self.page.evaluate(
             "() => [...document.querySelectorAll('#modal .row.gap button')]"
             ".map(b => b.textContent)")

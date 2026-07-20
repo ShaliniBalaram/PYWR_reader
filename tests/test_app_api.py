@@ -17,6 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import app as app_module  # noqa: E402
+from pywr_reader.api import files, runs  # noqa: E402
 
 EXAMPLE = os.path.join(ROOT, "examples", "gw_network", "pywr_model.json")
 
@@ -379,13 +380,13 @@ class TestApi(unittest.TestCase):
         # a force-quit leaves the snapshot beside the model; the next run
         # clears the orphans but must not touch one still in flight
         tmp = tempfile.mkdtemp()
-        orphan = os.path.join(tmp, app_module.RUN_TMP_PREFIX + "dead.json")
-        live = os.path.join(tmp, app_module.RUN_TMP_PREFIX + "alive.json")
+        orphan = os.path.join(tmp, runs.RUN_TMP_PREFIX + "dead.json")
+        live = os.path.join(tmp, runs.RUN_TMP_PREFIX + "alive.json")
         for p in (orphan, live):
             open(p, "w").close()
         app_module.RUNS.by_id["alive"] = {"id": "alive", "status": "running",
                                     "label": "x"}
-        app_module._sweep_run_temps(tmp)
+        runs.sweep_run_temps(tmp)
         self.assertFalse(os.path.exists(orphan), "orphan not swept")
         self.assertTrue(os.path.exists(live), "swept a run in flight")
 
@@ -418,10 +419,10 @@ class TestApi(unittest.TestCase):
         # can't run this on Windows here, so pin the behaviour by simulating it:
         # Windows must be offered its drives, never a hard-coded /Volumes
         drives = {"C:\\", "D:\\"}
-        with mock.patch.object(app_module.os, "name", "nt"), \
-             mock.patch.object(app_module.os.path, "isdir",
+        with mock.patch.object(files.os, "name", "nt"), \
+             mock.patch.object(files.os.path, "isdir",
                                side_effect=lambda p: p in drives):
-            roots = app_module._browse_roots()
+            roots = files.browse_roots()
         labels = [r["label"] for r in roots]
         self.assertEqual(labels[0], "Home")
         self.assertIn("C:\\", labels)
@@ -429,10 +430,10 @@ class TestApi(unittest.TestCase):
         self.assertNotIn("Volumes", labels)
 
     def test_browse_roots_on_mac_include_volumes(self):
-        with mock.patch.object(app_module.os, "name", "posix"), \
-             mock.patch.object(app_module.os.path, "isdir",
+        with mock.patch.object(files.os, "name", "posix"), \
+             mock.patch.object(files.os.path, "isdir",
                                side_effect=lambda p: p == "/Volumes"):
-            roots = app_module._browse_roots()
+            roots = files.browse_roots()
         labels = [r["label"] for r in roots]
         self.assertIn("Volumes", labels)
         self.assertNotIn("C:\\", labels)
@@ -601,7 +602,7 @@ class TestApi(unittest.TestCase):
         model = {"edges": [["s", "A"], ["A", "B"], ["A", "C"], ["x", "B"]]}
         nodes = {"s": {"flow": [50]}, "A": {"flow": [50]}, "B": {"flow": [50]},
                  "C": {"flow": [10]}, "x": {"flow": [40]}}
-        edges = app_module._estimate_edge_flows(model, nodes,
+        edges = runs.estimate_edge_flows(model, nodes,
                                                 {"1": [10]})   # A->B recorded
         ab = next(e for e in edges if e["src"] == "A" and e["dst"] == "B")
         self.assertTrue(ab["exact"])
@@ -612,7 +613,7 @@ class TestApi(unittest.TestCase):
         model = {"edges": [["s", "A"], ["A", "B"], ["A", "C"], ["x", "B"]]}
         nodes = {"s": {"flow": [50]}, "A": {"flow": [50]}, "B": {"flow": [30]},
                  "C": {"flow": [20]}, "x": {"flow": [40]}}
-        edges = app_module._estimate_edge_flows(model, nodes)
+        edges = runs.estimate_edge_flows(model, nodes)
         ab = next(e for e in edges if e["src"] == "A" and e["dst"] == "B")
         self.assertFalse(ab["exact"])
         self.assertEqual(ab["series"], [30])           # min(A=50, B=30)

@@ -23,7 +23,10 @@ sys.path.insert(0, ROOT)
 
 JS = Path(ROOT, "static", "app.js").read_text(encoding="utf-8")
 HTML = Path(ROOT, "static", "index.html").read_text(encoding="utf-8")
-APP = Path(ROOT, "app.py").read_text(encoding="utf-8")
+# routes live in the API blueprints (pywr_reader/api/*.py), registered by app.py
+API = "\n".join(p.read_text(encoding="utf-8")
+                for p in sorted(Path(ROOT, "pywr_reader", "api").glob("*.py"))
+                if not p.name.startswith("._"))    # skip macOS AppleDouble files
 
 
 def _segments(path):
@@ -61,7 +64,7 @@ class TestDomContract(unittest.TestCase):
 
 class TestApiContract(unittest.TestCase):
     def _routes(self):
-        rules = re.findall(r'@app\.(?:get|post|route)\("([^"]+)"', APP)
+        rules = re.findall(r'@bp\.(?:get|post|route)\("([^"]+)"', API)
         return [re.sub(r"<[^>]+>", "*", r) for r in rules]
 
     def test_every_api_path_the_js_calls_is_served(self):
