@@ -192,8 +192,7 @@ def main():
             from pywr.nodes import Storage
         except ImportError:
             from pywr.core import Storage
-        from pywr.recorders import (NumpyArrayNodeRecorder,
-                                    NumpyArrayStorageRecorder)
+        from pywr.recorders import NumpyArrayNodeRecorder, NumpyArrayStorageRecorder
 
         with open(model_path, encoding="utf-8-sig") as fh:
             data = json.load(fh)

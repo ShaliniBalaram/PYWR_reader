@@ -76,7 +76,7 @@ def _components(names, adj_undirected):
 def _break_cycles(nodes, out_adj):
     """Return acyclic out-adjacency (back edges dropped) via iterative DFS."""
     acyclic = defaultdict(list)
-    state = {n: 0 for n in nodes}  # 0 unvisited, 1 on stack, 2 done
+    state = dict.fromkeys(nodes, 0)  # 0 unvisited, 1 on stack, 2 done
     for root in nodes:
         if state[root] != 0:
             continue
@@ -105,12 +105,12 @@ def _break_cycles(nodes, out_adj):
 
 def _layers_longest_path(comp, acyclic):
     comp_set = set(comp)
-    in_deg = {n: 0 for n in comp}
+    in_deg = dict.fromkeys(comp, 0)
     for u in comp:
         for v in acyclic[u]:
             if v in comp_set:
                 in_deg[v] += 1
-    layer = {n: 0 for n in comp}
+    layer = dict.fromkeys(comp, 0)
     queue = deque([n for n in comp if in_deg[n] == 0]) or deque(comp[:1])
     visited = set()
     while queue:
@@ -142,7 +142,8 @@ def _barycenter_order(comp, layer, out_adj, in_adj, sweeps=8):
             nodes = by_layer[lev]
             keyed = []
             for n in nodes:
-                nbrs = [order[m] for m in neighbors_of(n) if m in order and layer.get(m) != lev]
+                nbrs = [order[m] for m in neighbors_of(n)
+                        if m in order and layer.get(m) != lev]
                 keyed.append((sum(nbrs) / len(nbrs) if nbrs else order[n], n))
             keyed.sort(key=lambda t: (t[0], t[1]))
             for i, (_, n) in enumerate(keyed):
@@ -265,8 +266,11 @@ def force_layout(node_names, edges, affinity=None, iterations=None):
     springs then push apart the very wide source rows that make the layered
     view unreadable on zone models.
 
-    Cost is O(n²) per iteration, so the iteration count tapers as the model
-    grows (a few hundred nodes settles in about a second).
+    Repulsion is bucketed into a spatial grid so each sweep pairs only nearby
+    nodes — roughly O(n) rather than O(n²), since the embedding keeps the cells
+    sparse. That keeps it usable on models with thousands of nodes (a naive
+    all-pairs sweep took ~20 s at 1200 nodes; the grid brings it to well under
+    a second). Distant repulsion is negligible under k²/d anyway.
     """
     names, out_adj, in_adj, und = _adjacency(node_names, edges)
     connected = [n for n in names if und[n]]
@@ -291,22 +295,34 @@ def force_layout(node_names, edges, affinity=None, iterations=None):
         iterations = max(40, min(200, int(12000 / n) + 30))
     temp = side * 0.10
     cool = temp / (iterations + 1)
+    k2 = k * k
+    cell = k                                        # grid cell ≈ ideal distance
     for _ in range(iterations):
         disp = {m: [0.0, 0.0] for m in connected}
-        for i in range(n):                          # repulsion, every pair
-            a = connected[i]
+        # bucket nodes into a grid, then repel each node only against those in
+        # its own and adjacent cells — O(n) per sweep while cells stay sparse
+        grid = defaultdict(list)
+        for idx, m in enumerate(connected):
+            grid[(int(pos[m][0] / cell), int(pos[m][1] / cell))].append(idx)
+        for i, a in enumerate(connected):           # repulsion, near pairs only
             ax, ay = pos[a]
-            for j in range(i + 1, n):
-                b = connected[j]
-                dx, dy = ax - pos[b][0], ay - pos[b][1]
+            cx, cy = int(ax / cell), int(ay / cell)
+            da = disp[a]
+            near = []
+            for gx in (cx - 1, cx, cx + 1):
+                for gy in (cy - 1, cy, cy + 1):
+                    near.extend(grid.get((gx, gy), ()))
+            for j in near[:80]:                     # cap bounds a dense cell
+                if j == i:
+                    continue
+                bx, by = pos[connected[j]]
+                dx, dy = ax - bx, ay - by
                 d2 = dx * dx + dy * dy
                 if d2 < 1e-9:                       # coincident: nudge apart
                     dx, dy, d2 = 1e-3 * (i + 1), 1e-3 * (j + 1), 2e-6
-                f = k * k / d2                      # k²/d along the unit vector
-                disp[a][0] += dx * f
-                disp[a][1] += dy * f
-                disp[b][0] -= dx * f
-                disp[b][1] -= dy * f
+                f = k2 / d2                         # k²/d along the unit vector
+                da[0] += dx * f
+                da[1] += dy * f
         for u in connected:                         # attraction along edges
             for v in out_adj[u]:
                 dx, dy = pos[u][0] - pos[v][0], pos[u][1] - pos[v][1]

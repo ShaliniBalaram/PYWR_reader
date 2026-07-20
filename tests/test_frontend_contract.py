@@ -16,13 +16,14 @@ import os
 import re
 import sys
 import unittest
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-JS = open(os.path.join(ROOT, "static", "app.js"), encoding="utf-8").read()
-HTML = open(os.path.join(ROOT, "static", "index.html"), encoding="utf-8").read()
-APP = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+JS = Path(ROOT, "static", "app.js").read_text(encoding="utf-8")
+HTML = Path(ROOT, "static", "index.html").read_text(encoding="utf-8")
+APP = Path(ROOT, "app.py").read_text(encoding="utf-8")
 
 
 def _segments(path):

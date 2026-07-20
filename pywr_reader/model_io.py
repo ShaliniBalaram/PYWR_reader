@@ -18,7 +18,6 @@ import io
 import json
 import os
 
-
 # --------------------------------------------------------------------------
 # Position extraction / injection
 # --------------------------------------------------------------------------
@@ -71,7 +70,7 @@ def inject_positions(model, positions):
 # --------------------------------------------------------------------------
 
 def load_pywr_json(path):
-    with open(path, "r", encoding="utf-8-sig") as fh:
+    with open(path, encoding="utf-8-sig") as fh:
         model = json.load(fh)
     if "nodes" not in model:
         raise ValueError(f"{os.path.basename(path)} has no 'nodes' key — "
@@ -154,7 +153,7 @@ def find_tcm_source_model(tcm_path, source_path):
 def load_csv_pair(nodes_csv_path):
     """Import Graph Overlay nodes.csv (+ sibling nodes_edges.csv) as a model."""
     def read_rows(path):
-        with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
             return list(csv.DictReader(fh))
 
     rows = read_rows(nodes_csv_path)
@@ -176,7 +175,8 @@ def load_csv_pair(nodes_csv_path):
                 continue
             sval = str(val).strip()
             try:
-                node[key] = float(sval) if "." in sval or "e" in sval.lower() else int(sval)
+                node[key] = (float(sval) if "." in sval or "e" in sval.lower()
+                             else int(sval))
             except ValueError:
                 node[key] = sval
         nodes.append(node)
@@ -194,7 +194,8 @@ def load_csv_pair(nodes_csv_path):
                  base.replace("nodes", "edges") + ".csv"):
         if os.path.isfile(cand) and cand != nodes_csv_path:
             for row in read_rows(cand):
-                src, dst = (row.get("src") or "").strip(), (row.get("dst") or "").strip()
+                src = (row.get("src") or "").strip()
+                dst = (row.get("dst") or "").strip()
                 if src and dst:
                     edges.append([src, dst])
             break
@@ -275,7 +276,8 @@ def export_csv_pair(model, positions, directory, stem="nodes"):
     param_keys = []
     for node in model.get("nodes", []):
         for key, val in node.items():
-            if key in ("name", "type", "position") or not isinstance(val, (int, float, str)):
+            if (key in ("name", "type", "position")
+                    or not isinstance(val, (int, float, str))):
                 continue
             if key not in param_keys:
                 param_keys.append(key)

@@ -60,7 +60,7 @@ def check_env():
 
 def read_log(tail=200):
     try:
-        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as fh:
+        with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()
         return lines[-tail:]
     except OSError:

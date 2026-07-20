@@ -5,6 +5,7 @@ Run:  python app.py   →  http://127.0.0.1:5321
 
 import base64
 import binascii
+import contextlib
 import csv
 import io
 import json
@@ -18,8 +19,8 @@ import uuid
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from pywr_reader import (dataresolve, envsetup, graphops, layout as layout_mod,
-                         model_io)
+from pywr_reader import dataresolve, envsetup, graphops, model_io
+from pywr_reader import layout as layout_mod
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=os.path.join(APP_DIR, "static"),
@@ -557,7 +558,8 @@ def trace():
 def env_status():
     info = envsetup.check_env()
     info["ok"] = True
-    info["log"] = envsetup.read_log(60) if info["setting_up"] or not info["ready"] else []
+    info["log"] = (envsetup.read_log(60)
+                   if info["setting_up"] or not info["ready"] else [])
     return jsonify(info)
 
 
@@ -621,13 +623,11 @@ def _run_dataview(path, key, series=False, window=None):
         with open(out_path, encoding="utf-8") as fh:
             result = json.load(fh)
     except subprocess.TimeoutExpired:
-        raise _ViewError("timed out reading that file")
+        raise _ViewError("timed out reading that file") from None
     finally:
         if os.path.isfile(out_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(out_path)
-            except OSError:
-                pass
     if not result.get("ok"):
         raise _ViewError(result.get("error") or "could not read the file")
     result["path"] = path
@@ -849,10 +849,8 @@ def _sweep_run_temps(directory):
             continue
         if name[len(RUN_TMP_PREFIX):-len(".json")] in live:
             continue                    # belongs to a run still in flight
-        try:
+        with contextlib.suppress(OSError):
             os.remove(os.path.join(directory, name))
-        except OSError:
-            pass
 
 
 def _run_worker(run_id, model_snapshot, model_path, overrides):
@@ -906,10 +904,8 @@ def _run_worker(run_id, model_snapshot, model_path, overrides):
         run["finished_at"] = time.time()
         for tmp in (tmp_model, tmp_out, tmp_over):
             if tmp and os.path.isfile(tmp):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp)
-                except OSError:
-                    pass
 
 
 @app.post("/api/run")

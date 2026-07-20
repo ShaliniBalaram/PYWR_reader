@@ -16,9 +16,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pywr_reader import dataresolve, dataview, graphops, layout  # noqa: E402
-from pywr_reader import model_io  # noqa: E402
-from pywr_reader import runner  # noqa: E402
+from pywr_reader import (  # noqa: E402
+    dataresolve,
+    dataview,
+    graphops,
+    layout,
+    model_io,  # noqa: E402
+    runner,  # noqa: E402
+)
 
 
 def tiny_model():

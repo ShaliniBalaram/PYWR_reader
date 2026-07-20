@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**129 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**132 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -78,6 +78,7 @@ themselves rather than fail:
 | frontend contract | just Flask | that `app.js` still agrees with `index.html` and `app.py` — every `$("id")` it looks up exists, every `/api/…` it calls is served |
 | pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording, reading h5/csv data |
 | browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing |
+| performance | just Flask | a 1,200-node model lays out, opens, and saves within a time budget — the guardrail that keeps real water models responsive |
 
 The frontend has no build step and no test framework, so the contract tests
 exist to catch what silently breaks otherwise: rename an element id in one
@@ -89,6 +90,9 @@ with the name of the culprit. To enable the browser tests too:
 ./.venv/bin/playwright install chromium      # ~90 MB, one time
 ./run_tests.sh
 ```
+
+`run_tests.sh` also runs **`ruff`** (config in `ruff.toml`) when it's installed
+— a bare checkout skips it.
 
 ---
 
@@ -292,7 +296,7 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend (vanilla JS + SVG, no build step)
-├── tests/                    129 unittest tests
+├── tests/                    132 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs app.py (no deps)

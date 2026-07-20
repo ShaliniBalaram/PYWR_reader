@@ -1,0 +1,13 @@
+# Linting for PyWR Reader. Run:  ./.venv/bin/ruff check .
+# ruff is a dev tool (requirements-dev.txt), not needed to run the app.
+line-length = 88
+target-version = "py39"
+
+[lint]
+# A pragmatic set: pyflakes/pycodestyle errors, import order, modern-Python
+# rewrites, common bugs (bugbear), comprehension and simplify hints.
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+
+[lint.per-file-ignores]
+# Tests favour readability over a few of these (long data literals, etc.).
+"tests/*" = ["E501"]

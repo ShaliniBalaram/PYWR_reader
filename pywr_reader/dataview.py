@@ -90,7 +90,7 @@ def read_h5(path, key=None):
     store_keys = []
     try:
         with pd.HDFStore(path, mode="r") as store:
-            store_keys = [str(k) for k in store.keys()]
+            store_keys = [str(k) for k in store]
             for k in store_keys:
                 try:
                     rows = _storer_rows(store.get_storer(k))
@@ -149,7 +149,7 @@ def _read_h5_raw(path, key=None, err=None):
 def read_csv(path):
     import pandas as pd
     head = pd.read_csv(path, nrows=MAX_ROWS)
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         total = max(sum(1 for _ in fh) - 1, 0)      # minus the header
     return {"kind": "csv", "keys": [], "preview": _frame_preview(head, total)}
 
@@ -190,7 +190,7 @@ def _clampwin(n, start, stop):
 
 
 def _count_csv_rows(path):
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         return max(sum(1 for _ in fh) - 1, 0)       # minus the header
 
 
@@ -209,7 +209,7 @@ def _read_window(path, key=None, start=None, stop=None):
     if lower.endswith((".h5", ".hdf5", ".hdf")):
         try:
             with pd.HDFStore(path, mode="r") as store:
-                keys = [str(k) for k in store.keys()]
+                keys = [str(k) for k in store]
                 if not keys:
                     raise ValueError("empty store")
                 target = key or (keys[0] if len(keys) == 1 else None)
@@ -227,7 +227,7 @@ def _read_window(path, key=None, start=None, stop=None):
             with tables.open_file(path, mode="r") as fh:
                 leaf = fh.get_node(key) if key else None
                 if leaf is None:
-                    raise ValueError("this file has several keys — pick one")
+                    raise ValueError("this file has several keys — pick one") from None
                 n = int(leaf.shape[0]) if leaf.shape else 0
                 s, e = _clampwin(n, start, stop)
                 frame = pd.DataFrame(leaf.read(s, e))         # windowed read

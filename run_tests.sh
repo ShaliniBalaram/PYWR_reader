@@ -16,4 +16,11 @@ PY=.venv/bin/python
 [ -x "$PY" ] || PY=python3
 
 echo "Using: $($PY --version)"
+
+# lint first if ruff is installed (dev extra); a bare checkout just skips it
+if [ -x .venv/bin/ruff ]; then
+    echo "Linting with ruff…"
+    .venv/bin/ruff check .
+fi
+
 exec "$PY" -m unittest discover -s tests -v
