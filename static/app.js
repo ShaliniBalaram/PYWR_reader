@@ -1622,6 +1622,12 @@ function renderRuns() {
     }
     return item;
   }));
+  // runs live only in memory — make that plain, and nudge to save
+  const anyDone = S.runs.some(r => r.status === "done");
+  list.append(el("p", { class: "muted small runs-note" }, anyDone
+    ? "Runs are kept in memory only. Use save on a run to keep it past a "
+      + "restart; Open run… reloads a saved one."
+    : "Runs are kept in memory until the app closes."));
 }
 
 async function activateRun(runId) {
