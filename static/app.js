@@ -1,132 +1,13 @@
-/* PyWR Reader frontend — network canvas, editing, runs, flow explorer. */
-"use strict";
+/* PyWR Reader frontend — entry module. Imports the leaf modules (state,
+   palette, dom, api) and wires the whole app together. Loaded as
+   <script type="module">, so it keeps the "no build step" promise. */
 
-/* ---------------------------------------------------------------- state */
-const S = {
-  graph: null,            // last /api/graph payload
-  positions: {},          // {name: [x, y]} client copy
-  nodeIdx: new Map(),     // name -> node object
-  sel: null,              // {kind:'node'|'edge', name} | {kind:'edge', src, dst, idx}
-  traceMode: "both",      // both | up | down | off
-  mode: "select",         // select | addnode | addedge
-  edgeSrc: null,
-  view: { x: 40, y: 40, k: 1 },
-  env: null,
-  runs: [],
-  activeRun: null,        // status payload of the active (done) run
-  compare: new Set(),
-  t: 0,
-  frames: new Map(),      // blockStart -> frames payload (for activeRun)
-  frameReq: new Set(),
-  playing: false,
-  playTimer: null,
-  whatif: [],             // [{node, key, value}]
-  scenarioSel: [],        // per-scenario-dimension selected member index
-  showEdgeValues: true,   // draw flow numbers on the selected path during a run
-  labelEdges: new Set(),  // edge indices to label (selected node's path)
-  layoutUndo: null,       // positions before the last layout, for Undo
-  seriesCache: new Map(), // `${runId}|${node}` -> series payload
-  bg: null,               // trace image {src,x,y,scale,opacity,locked,natW,natH}
-  quickPlace: false,      // place traced nodes without the dialog
-};
-const BLOCK = 200;
-const NODE_R = 11;
+import { S, BLOCK, NODE_R } from "./state.js";
+import { TYPE_STYLES, OTHER_STYLE, RUN_COLORS, FLOW_RAMP, NODE_TYPES,
+         typeStyle, flowColor } from "./palette.js";
+import { $, el, svgEl, fmt, toast, openModal, closeModal } from "./dom.js";
+import { api } from "./api.js";
 
-/* ------------------------------------------------------------- palette */
-const TYPE_STYLES = [
-  { re: /virtual|aggregated/, color: "#9085e9", shape: "diamond", label: "virtual / aggregated" },
-  { re: /reservoir|storage/, color: "#3987e5", shape: "square", label: "storage / reservoir" },
-  { re: /catchment|input|discharge/, color: "#008300", shape: "circle", label: "source / inflow" },
-  { re: /river|gauge/, color: "#199e70", shape: "circle", label: "river" },
-  { re: /output|demand/, color: "#d95926", shape: "circle", label: "demand / output" },
-  { re: /link|delay|break|piecewise|split/, color: "#c98500", shape: "circle", label: "link / conveyance" },
-];
-const OTHER_STYLE = { color: "#d55181", shape: "circle", label: "other" };
-const RUN_COLORS = ["#3987e5", "#199e70", "#c98500", "#9085e9", "#e66767", "#d55181"];
-const FLOW_RAMP = ["#0d366b", "#104281", "#184f95", "#1c5cab", "#256abf",
-  "#2a78d6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef", "#9ec5f4", "#cde2fb"];
-const NODE_TYPES = ["input", "output", "link", "storage", "reservoir", "catchment",
-  "river", "rivergauge", "riversplit", "riversplitwithgauge", "discharge",
-  "losslink", "delaynode", "breaklink", "piecewiselink", "multisplitlink",
-  "virtualstorage", "annualvirtualstorage", "seasonalvirtualstorage",
-  "monthlyvirtualstorage", "rollingvirtualstorage", "aggregatednode",
-  "aggregatedstorage", "keatingaquifer"];
-
-function typeStyle(type) {
-  const t = String(type || "").toLowerCase();
-  return TYPE_STYLES.find(s => s.re.test(t)) || OTHER_STYLE;
-}
-function lerpHex(a, b, t) {
-  const pa = [1, 3, 5].map(i => parseInt(a.substr(i, 2), 16));
-  const pb = [1, 3, 5].map(i => parseInt(b.substr(i, 2), 16));
-  return "#" + pa.map((v, i) => Math.round(v + (pb[i] - v) * t)
-    .toString(16).padStart(2, "0")).join("");
-}
-function flowColor(t) {
-  const x = Math.max(0, Math.min(1, t)) * (FLOW_RAMP.length - 1);
-  const i = Math.min(FLOW_RAMP.length - 2, Math.floor(x));
-  return lerpHex(FLOW_RAMP[i], FLOW_RAMP[i + 1], x - i);
-}
-
-/* ------------------------------------------------------------- helpers */
-const $ = id => document.getElementById(id);
-const el = (tag, attrs = {}, ...kids) => {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === "class") node.className = v;
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
-    else node.setAttribute(k, v);
-  }
-  for (const kid of kids) {
-    if (kid == null) continue;
-    node.append(kid.nodeType ? kid : document.createTextNode(kid));
-  }
-  return node;
-};
-const svgEl = (tag, attrs = {}) => {
-  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-  return node;
-};
-function fmt(v) {
-  if (v == null) return "—";
-  if (Math.abs(v) >= 1000) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return Number(v.toPrecision(4)).toString();
-}
-
-let toastTimer = null;
-function toast(msg, isError) {
-  const box = $("toast");
-  box.textContent = msg;
-  box.classList.toggle("error", !!isError);
-  box.classList.remove("hidden");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => box.classList.add("hidden"), isError ? 7000 : 3500);
-}
-
-async function api(path, body, method) {
-  const opts = { method: method || (body ? "POST" : "GET") };
-  if (body) {
-    opts.headers = { "Content-Type": "application/json" };
-    opts.body = JSON.stringify(body);
-  }
-  const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) {
-    throw new Error(data.error || `${res.status} ${res.statusText}`);
-  }
-  return data;
-}
-
-function openModal(...content) {
-  const modal = $("modal");
-  modal.replaceChildren(...content);
-  $("modal-backdrop").classList.remove("hidden");
-}
-function closeModal() {
-  $("modal-backdrop").classList.add("hidden");
-  $("modal").classList.remove("explorer");
-}
 $("modal-backdrop").addEventListener("mousedown", e => {
   if (e.target === $("modal-backdrop")) closeModal();
 });
@@ -2654,3 +2535,8 @@ window.addEventListener("resize", applyView);
   S.runs.filter(r => r.status === "running" || r.status === "queued")
     .forEach(r => pollRun(r.id));
 })();
+
+
+// Debug/test surface: the browser smoke tests call these by name via
+// page.evaluate, which runs in the page global scope (module scope is private).
+Object.assign(window, { S, selectNode, openModelExplorer, download });

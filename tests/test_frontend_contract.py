@@ -21,7 +21,10 @@ from pathlib import Path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-JS = Path(ROOT, "static", "app.js").read_text(encoding="utf-8")
+# the frontend is ES modules now (app.js + state/palette/dom/api …) — scan them all
+JS = "\n".join(p.read_text(encoding="utf-8")
+               for p in sorted(Path(ROOT, "static").glob("*.js"))
+               if not p.name.startswith("._"))    # skip macOS AppleDouble files
 HTML = Path(ROOT, "static", "index.html").read_text(encoding="utf-8")
 # routes live in the API blueprints (pywr_reader/api/*.py), registered by app.py
 API = "\n".join(p.read_text(encoding="utf-8")

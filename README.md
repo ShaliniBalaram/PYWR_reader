@@ -75,7 +75,7 @@ themselves rather than fail:
 | Group | Needs | Covers |
 |---|---|---|
 | unit + API | just Flask | loaders, layout, graph ops, every route |
-| frontend contract | just Flask | that `app.js` still agrees with `index.html` and `app.py` — every `$("id")` it looks up exists, every `/api/…` it calls is served |
+| frontend contract | just Flask | that the JS modules still agree with `index.html` and the API blueprints — every `$("id")` looked up exists, every `/api/…` called is served |
 | pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording, reading h5/csv data |
 | browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing |
 | performance | just Flask | a 1,200-node model lays out, opens, and saves within a time budget — the guardrail that keeps real water models responsive |
@@ -303,7 +303,9 @@ PYWR_reader/
 │   ├── dataview.py           read h5/xlsx/csv (runs inside .pywr-env)
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
-├── static/                   frontend (vanilla JS + SVG, no build step)
+├── static/                   frontend — native ES modules (no build step)
+│   ├── app.js                    entry module: canvas, editing, runs, wiring
+│   └── state / palette / dom / api.js   shared state, colours, DOM + API helpers
 ├── tests/                    132 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
