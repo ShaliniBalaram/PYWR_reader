@@ -83,9 +83,7 @@ class TestLargeModelPerformance(unittest.TestCase):
             json.dump(self.model, fh)
         app_module.app.testing = True
         c = app_module.app.test_client()
-        app_module.STATE.update(model=None, positions={}, path=None,
-                                dirty=False, warnings=[], data_dirs=[],
-                                data=None)
+        app_module.WORKSPACE.reset()
         r = self._timed(4.0, "/api/open",
                         lambda: c.post("/api/open", json={"path": path}))
         self.assertEqual(r.status_code, 200)

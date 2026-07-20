@@ -9,8 +9,8 @@ Skipped automatically unless playwright and its chromium are installed, so
 
 tests/test_frontend_contract.py checks that app.js still agrees with
 index.html and app.py; these check that the thing actually works when clicked.
-The app is served in-process, so the Flask STATE the tests set up is the same
-STATE the page talks to.
+The app is served in-process, so the session the tests set up is the same
+session the page talks to.
 """
 
 import logging
@@ -82,10 +82,8 @@ class TestFrontendSmoke(unittest.TestCase):
         cls.server.stop()
 
     def setUp(self):
-        # a model in STATE before the page loads — the page fetches /api/graph
-        app_module.STATE.update(model=None, positions={}, path=None,
-                                dirty=False, warnings=[], data_dirs=[],
-                                data=None)
+        # open a model before the page loads — the page fetches /api/graph
+        app_module.WORKSPACE.reset()
         app_module.app.test_client().post("/api/open", json={"path": EXAMPLE})
         self.errors = []
         self.page = self.browser.new_page(viewport={"width": 1280,
@@ -250,7 +248,7 @@ class TestFrontendSmoke(unittest.TestCase):
         }""")
         self.page.click("#modal button.primary")
         self.page.wait_for_selector("#modal-backdrop", state="hidden")
-        self.assertEqual(app_module.STATE["model"]["metadata"]["title"],
+        self.assertEqual(app_module.WORKSPACE.model["metadata"]["title"],
                          "Smoke Tested")
         self.assertNoConsoleErrors()
 
@@ -265,7 +263,7 @@ class TestFrontendSmoke(unittest.TestCase):
         self.assertIn("Invalid JSON", self.page.inner_text(".json-err"))
         # the box still holds what was typed, and the model is untouched
         self.assertEqual(self.page.input_value(".json-edit"), "{ nope")
-        self.assertEqual(len(app_module.STATE["model"]["nodes"]), 11)
+        self.assertEqual(len(app_module.WORKSPACE.model["nodes"]), 11)
         self.assertNoConsoleErrors()
 
 

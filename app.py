@@ -19,101 +19,22 @@ import uuid
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from pywr_reader import dataresolve, envsetup, graphops, model_io
+from pywr_reader import envsetup, graphops, model_io
 from pywr_reader import layout as layout_mod
+from pywr_reader.session import RUNS, WORKSPACE, normalize_positions
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=os.path.join(APP_DIR, "static"),
             static_url_path="/static")
 app.json.sort_keys = False  # keep pywr model key order in API responses
 
-# ---------------------------------------------------------------------------
-# In-memory session state (this is a single-user local tool)
-# ---------------------------------------------------------------------------
-STATE = {
-    "model": None,        # full pywr model dict
-    "positions": {},      # {name: [x, y]}
-    "path": None,         # file the model came from
-    "dirty": False,
-    "layout_was_auto": False,
-    "warnings": [],
-    "data_dirs": [],      # extra folders to search for data files
-    "data": None,         # dataresolve.resolve(...) result
-}
-RUNS = {}                 # run_id -> run dict
-RUN_ORDER = []
-LOCK = threading.RLock()
-
-
-def _resolve_data():
-    """(Re)locate the model's external data files; store the report."""
-    if STATE["model"] is None:
-        STATE["data"] = None
-        return
-    STATE["data"] = dataresolve.resolve(
-        STATE["model"], STATE["path"], STATE["data_dirs"])
-
-
-def _data_payload():
-    d = STATE["data"] or {}
-    return {"report": d.get("report", []), "missing": d.get("missing", []),
-            "dirs": STATE["data_dirs"]}
+# The open model and the runs live in a single-user session (pywr_reader.session);
+# WORKSPACE / RUNS are imported above. Routes read and mutate them under
+# WORKSPACE.lock.
 
 
 def _err(msg, code=400):
     return jsonify({"ok": False, "error": str(msg)}), code
-
-
-def _graph_payload():
-    summary = graphops.graph_summary(STATE["model"], STATE["positions"])
-    summary.update({
-        "ok": True,
-        "path": STATE["path"],
-        "dirty": STATE["dirty"],
-        "layout_was_auto": STATE["layout_was_auto"],
-        "warnings": STATE["warnings"],
-        "data": _data_payload(),
-    })
-    return summary
-
-
-def _require_model():
-    if STATE["model"] is None:
-        raise ValueError("no model is open")
-
-
-def _normalize_positions(positions):
-    """Rescale positions so the median nearest-neighbour distance sits around
-    the app's node spacing. Model files store positions in arbitrary units
-    (grid cells, screen px, metres); without this, dense layouts render as
-    overlapping blobs and sparse ones as specks."""
-    pts = list(positions.values())
-    if len(pts) < 2:
-        return positions
-    import math
-    sample = pts if len(pts) <= 400 else pts[::max(1, len(pts) // 400)]
-    nearest = []
-    for i, p in enumerate(sample):
-        best = None
-        for j, q in enumerate(sample):
-            if i == j:
-                continue
-            d = math.hypot(p[0] - q[0], p[1] - q[1])
-            if d > 0 and (best is None or d < best):
-                best = d
-        if best is not None:
-            nearest.append(best)
-    if not nearest:
-        return positions
-    nearest.sort()
-    median = nearest[len(nearest) // 2]
-    if 60.0 <= median <= 400.0:
-        return positions
-    scale = 120.0 / median
-    cx = sum(p[0] for p in pts) / len(pts)
-    cy = sum(p[1] for p in pts) / len(pts)
-    return {name: [(xy[0] - cx) * scale, (xy[1] - cy) * scale]
-            for name, xy in positions.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -191,37 +112,37 @@ def open_model():
 
     # A .tcm opened while a model is already loaded applies its positions to
     # that model (the natural "open model, then open its view file" flow).
-    if path.lower().endswith(".tcm") and STATE["model"] is not None:
+    if path.lower().endswith(".tcm") and WORKSPACE.model is not None:
         try:
             tcm_positions, _, _ = model_io.load_tcm(path)
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
-        with LOCK:
-            names = {n["name"] for n in STATE["model"].get("nodes", [])}
+        with WORKSPACE.lock:
+            names = {n["name"] for n in WORKSPACE.model.get("nodes", [])}
             matched = 0
             for name, xy in tcm_positions.items():
                 if name in names:
-                    STATE["positions"][name] = xy
+                    WORKSPACE.positions[name] = xy
                     matched += 1
             if matched:
-                all_names = [n["name"] for n in STATE["model"].get("nodes", [])]
-                STATE["positions"] = _normalize_positions(
+                all_names = [n["name"] for n in WORKSPACE.model.get("nodes", [])]
+                WORKSPACE.positions = normalize_positions(
                     layout_mod.layout_missing(
-                        all_names, STATE["model"].get("edges", []),
-                        STATE["positions"]))
-                STATE["dirty"] = True
-                STATE["layout_was_auto"] = False
-            STATE["warnings"] = ([f".tcm positions applied to {matched} of "
+                        all_names, WORKSPACE.model.get("edges", []),
+                        WORKSPACE.positions))
+                WORKSPACE.dirty = True
+                WORKSPACE.layout_was_auto = False
+            WORKSPACE.warnings = ([f".tcm positions applied to {matched} of "
                                   f"{len(names)} nodes"] if matched else
                                  [".tcm node names did not match the open model"])
-        return jsonify(_graph_payload())
+        return jsonify(WORKSPACE.graph_payload())
 
     try:
         loaded = model_io.load_any(path)
     except Exception as exc:  # noqa: BLE001 — surface parse errors to the UI
         return _err(exc)
 
-    with LOCK:
+    with WORKSPACE.lock:
         model, positions = loaded["model"], loaded["positions"]
         names = [n["name"] for n in model.get("nodes", [])]
         auto = False
@@ -234,12 +155,10 @@ def open_model():
             positions = layout_mod.layout_missing(
                 names, model.get("edges", []), positions)
         if not auto:
-            positions = _normalize_positions(positions)
-        STATE.update(model=model, positions=positions, path=loaded["path"],
-                     dirty=False, layout_was_auto=auto,
-                     warnings=loaded["warnings"], data_dirs=[], data=None)
-        _resolve_data()
-    return jsonify(_graph_payload())
+            positions = normalize_positions(positions)
+        WORKSPACE.load(model, positions, path=loaded["path"], auto=auto,
+                       warnings=loaded["warnings"])
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.post("/api/new")
@@ -248,37 +167,33 @@ def new_model():
     image, or building one from scratch."""
     body = request.get_json(force=True, silent=True) or {}
     title = (body.get("title") or "Untitled model").strip() or "Untitled model"
-    with LOCK:
-        STATE.update(
-            model={
-                "metadata": {"title": title, "minimum_version": "1.20.0"},
-                "timestepper": {"start": "2000-01-01", "end": "2000-12-31",
-                                "timestep": 1},
-                "nodes": [], "edges": [], "parameters": {}, "recorders": {},
-            },
-            positions={}, path=None, dirty=True, layout_was_auto=False,
-            warnings=[], data_dirs=[], data=None)
-        _resolve_data()
-    return jsonify(_graph_payload())
+    with WORKSPACE.lock:
+        WORKSPACE.load({
+            "metadata": {"title": title, "minimum_version": "1.20.0"},
+            "timestepper": {"start": "2000-01-01", "end": "2000-12-31",
+                            "timestep": 1},
+            "nodes": [], "edges": [], "parameters": {}, "recorders": {},
+        }, {}, dirty=True)
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.get("/api/graph")
 def get_graph():
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
-    return jsonify(_graph_payload())
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.get("/api/model/raw")
 def raw_model():
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
-    model = json.loads(json.dumps(STATE["model"]))
-    model_io.inject_positions(model, STATE["positions"])
+    model = json.loads(json.dumps(WORKSPACE.model))
+    model_io.inject_positions(model, WORKSPACE.positions)
     return jsonify(model)
 
 
@@ -339,11 +254,11 @@ def replace_raw_model():
     problem = _validate_model(model)
     if problem:
         return _err(problem)
-    with LOCK:
+    with WORKSPACE.lock:
         names = [n["name"] for n in model["nodes"]]
         # positions come from the edited JSON where it has them, otherwise
         # keep what's on screen so an unrelated edit doesn't scramble the layout
-        positions = dict(STATE["positions"])
+        positions = dict(WORKSPACE.positions)
         for old, new in renames.items():
             if old != new and old in positions:
                 positions[new] = positions.pop(old)   # a rename stays put
@@ -352,25 +267,28 @@ def replace_raw_model():
         if len(positions) < len(names):
             positions = layout_mod.layout_missing(
                 names, model.get("edges", []), positions)
-        STATE.update(model=model, positions=_normalize_positions(positions),
-                     dirty=True, warnings=notes)
-        _resolve_data()
-    return jsonify(_graph_payload())
+        # an in-place edit: keep the current path and data-file search
+        WORKSPACE.model = model
+        WORKSPACE.positions = normalize_positions(positions)
+        WORKSPACE.dirty = True
+        WORKSPACE.warnings = notes
+        WORKSPACE.resolve_data()
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.post("/api/save")
 def save_model():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        path = (body.get("path") or STATE["path"] or "").strip()
+        WORKSPACE.require_model()
+        path = (body.get("path") or WORKSPACE.path or "").strip()
         if not path:
             return _err("no target path")
         if not path.lower().endswith(".json"):
             path += ".json"
-        with LOCK:
-            model_io.save_pywr_json(STATE["model"], STATE["positions"], path)
-            STATE["path"], STATE["dirty"] = path, False
+        with WORKSPACE.lock:
+            model_io.save_pywr_json(WORKSPACE.model, WORKSPACE.positions, path)
+            WORKSPACE.path, WORKSPACE.dirty = path, False
         return jsonify({"ok": True, "path": path})
     except (ValueError, OSError) as exc:
         return _err(exc)
@@ -380,10 +298,10 @@ def save_model():
 def export_csv():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        directory = body.get("directory") or os.path.dirname(STATE["path"] or APP_DIR)
-        with LOCK:
-            paths = model_io.export_csv_pair(STATE["model"], STATE["positions"],
+        WORKSPACE.require_model()
+        directory = body.get("directory") or os.path.dirname(WORKSPACE.path or APP_DIR)
+        with WORKSPACE.lock:
+            paths = model_io.export_csv_pair(WORKSPACE.model, WORKSPACE.positions,
                                              directory)
         return jsonify({"ok": True, "files": paths})
     except (ValueError, OSError) as exc:
@@ -405,40 +323,40 @@ def relayout():
     mode = body.get("mode", "all")
     kind = body.get("kind") or "layered"
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
     if mode != "missing" and kind not in layout_mod.LAYOUT_KINDS:
         return _err(f"unknown layout {kind!r}")
-    with LOCK:
-        model = STATE["model"]
+    with WORKSPACE.lock:
+        model = WORKSPACE.model
         names = [n["name"] for n in model.get("nodes", [])]
         if mode == "missing":
-            STATE["positions"] = layout_mod.layout_missing(
-                names, model.get("edges", []), STATE["positions"])
+            WORKSPACE.positions = layout_mod.layout_missing(
+                names, model.get("edges", []), WORKSPACE.positions)
         else:
             groups = {n["name"]: layout_mod.node_group(n.get("type", ""))
                       for n in model.get("nodes", [])}
-            STATE["positions"] = _normalize_positions(layout_mod.compute(
+            WORKSPACE.positions = normalize_positions(layout_mod.compute(
                 kind, names, model.get("edges", []),
                 affinity=graphops.node_affinity(model), groups=groups))
-        STATE["dirty"] = True
-        STATE["layout_was_auto"] = True
-    return jsonify(_graph_payload())
+        WORKSPACE.dirty = True
+        WORKSPACE.layout_was_auto = True
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.post("/api/positions")
 def set_positions():
     body = request.get_json(force=True)
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
-    with LOCK:
+    with WORKSPACE.lock:
         for name, xy in (body.get("positions") or {}).items():
             if isinstance(xy, (list, tuple)) and len(xy) >= 2:
-                STATE["positions"][name] = [float(xy[0]), float(xy[1])]
-        STATE["dirty"] = True
+                WORKSPACE.positions[name] = [float(xy[0]), float(xy[1])]
+        WORKSPACE.dirty = True
     return jsonify({"ok": True})
 
 
@@ -449,49 +367,49 @@ def set_positions():
 def node_add():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        with LOCK:
-            node = graphops.add_node(STATE["model"], body.get("node") or {})
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            node = graphops.add_node(WORKSPACE.model, body.get("node") or {})
             pos = body.get("pos")
             if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                STATE["positions"][node["name"]] = [float(pos[0]), float(pos[1])]
-            STATE["dirty"] = True
+                WORKSPACE.positions[node["name"]] = [float(pos[0]), float(pos[1])]
+            WORKSPACE.dirty = True
     except ValueError as exc:
         return _err(exc)
-    return jsonify(_graph_payload())
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.post("/api/node/update")
 def node_update():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        with LOCK:
-            graphops.update_node(STATE["model"], body.get("name"),
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            graphops.update_node(WORKSPACE.model, body.get("name"),
                                  body.get("changes"), body.get("removals"))
             new_type = (body.get("changes") or {}).get("type")
             if new_type:
-                graphops.node_by_name(STATE["model"], body["name"])["type"] = new_type
-            STATE["dirty"] = True
+                graphops.node_by_name(WORKSPACE.model, body["name"])["type"] = new_type
+            WORKSPACE.dirty = True
     except ValueError as exc:
         return _err(exc)
-    return jsonify(_graph_payload())
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.post("/api/node/rename")
 def node_rename():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        with LOCK:
-            notes = graphops.rename_node(STATE["model"], body.get("old"),
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            notes = graphops.rename_node(WORKSPACE.model, body.get("old"),
                                          body.get("new"))
-            if body.get("old") in STATE["positions"]:
-                STATE["positions"][body["new"]] = STATE["positions"].pop(body["old"])
-            STATE["dirty"] = True
+            if body.get("old") in WORKSPACE.positions:
+                WORKSPACE.positions[body["new"]] = WORKSPACE.positions.pop(body["old"])
+            WORKSPACE.dirty = True
     except ValueError as exc:
         return _err(exc)
-    payload = _graph_payload()
+    payload = WORKSPACE.graph_payload()
     payload["notes"] = notes
     return jsonify(payload)
 
@@ -500,14 +418,14 @@ def node_rename():
 def node_delete():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        with LOCK:
-            warnings = graphops.delete_node(STATE["model"], body.get("name"))
-            STATE["positions"].pop(body.get("name"), None)
-            STATE["dirty"] = True
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            warnings = graphops.delete_node(WORKSPACE.model, body.get("name"))
+            WORKSPACE.positions.pop(body.get("name"), None)
+            WORKSPACE.dirty = True
     except ValueError as exc:
         return _err(exc)
-    payload = _graph_payload()
+    payload = WORKSPACE.graph_payload()
     payload["delete_warnings"] = warnings
     return jsonify(payload)
 
@@ -516,26 +434,26 @@ def node_delete():
 def edge_add():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        with LOCK:
-            graphops.add_edge(STATE["model"], body.get("src"), body.get("dst"))
-            STATE["dirty"] = True
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            graphops.add_edge(WORKSPACE.model, body.get("src"), body.get("dst"))
+            WORKSPACE.dirty = True
     except ValueError as exc:
         return _err(exc)
-    return jsonify(_graph_payload())
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.post("/api/edge/delete")
 def edge_delete():
     body = request.get_json(force=True)
     try:
-        _require_model()
-        with LOCK:
-            graphops.delete_edge(STATE["model"], body.get("src"), body.get("dst"))
-            STATE["dirty"] = True
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            graphops.delete_edge(WORKSPACE.model, body.get("src"), body.get("dst"))
+            WORKSPACE.dirty = True
     except ValueError as exc:
         return _err(exc)
-    return jsonify(_graph_payload())
+    return jsonify(WORKSPACE.graph_payload())
 
 
 @app.get("/api/trace")
@@ -543,8 +461,8 @@ def trace():
     name = request.args.get("name")
     direction = request.args.get("dir", "downstream")
     try:
-        _require_model()
-        nodes, edges = graphops.trace(STATE["model"], name, direction)
+        WORKSPACE.require_model()
+        nodes, edges = graphops.trace(WORKSPACE.model, name, direction)
     except ValueError as exc:
         return _err(exc)
     return jsonify({"ok": True, "nodes": sorted(nodes),
@@ -575,10 +493,10 @@ def env_setup():
 @app.get("/api/data")
 def data_status():
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
-    return jsonify({"ok": True, **_data_payload()})
+    return jsonify({"ok": True, **WORKSPACE.data_payload()})
 
 
 class _ViewError(Exception):
@@ -598,7 +516,7 @@ def _run_dataview(path, key, series=False, window=None):
     Restricted to files the open model actually references — never an
     arbitrary file reader."""
     allowed = {item["resolved"] for item in
-               ((STATE["data"] or {}).get("report") or []) if item.get("resolved")}
+               ((WORKSPACE.data or {}).get("report") or []) if item.get("resolved")}
     if path not in allowed:
         raise _ViewError("that file is not one of this model's data files", 403)
     info = envsetup.check_env()
@@ -671,19 +589,19 @@ def data_add_dir():
     directory = (body.get("directory") or "").strip()
     remove = body.get("remove")
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
-    with LOCK:
+    with WORKSPACE.lock:
         if remove:
-            STATE["data_dirs"] = [d for d in STATE["data_dirs"] if d != remove]
+            WORKSPACE.data_dirs = [d for d in WORKSPACE.data_dirs if d != remove]
         elif directory:
             if not os.path.isdir(directory):
                 return _err(f"not a directory: {directory}")
-            if directory not in STATE["data_dirs"]:
-                STATE["data_dirs"].append(directory)
-        _resolve_data()
-    return jsonify({"ok": True, **_data_payload()})
+            if directory not in WORKSPACE.data_dirs:
+                WORKSPACE.data_dirs.append(directory)
+        WORKSPACE.resolve_data()
+    return jsonify({"ok": True, **WORKSPACE.data_payload()})
 
 
 # ---------------------------------------------------------------------------
@@ -701,13 +619,13 @@ _EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
 
 
 def _trace_geom_path():
-    p = STATE["path"]
+    p = WORKSPACE.path
     return os.path.splitext(p)[0] + ".pywrtrace.json" if p else None
 
 
 def _trace_image_glob():
     """All possible sidecar image paths (any extension) for this model."""
-    stem = os.path.splitext(STATE["path"])[0] if STATE["path"] else None
+    stem = os.path.splitext(WORKSPACE.path)[0] if WORKSPACE.path else None
     return [f"{stem}.pywrtrace.{ext}" for ext in _EXT_MIME] if stem else []
 
 
@@ -726,7 +644,7 @@ def _decode_data_url(src):
 @app.get("/api/traceimage")
 def trace_get():
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
     gp = _trace_geom_path()
@@ -752,7 +670,7 @@ def trace_get():
 def trace_save():
     body = request.get_json(force=True)
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
     gp = _trace_geom_path()
@@ -771,7 +689,7 @@ def trace_save():
         mime, data = _decode_data_url(trace.get("src"))
         if data is not None:                    # new/updated image → write it
             ext = _MIME_EXT.get(mime, "png")
-            img_path = os.path.splitext(STATE["path"])[0] + f".pywrtrace.{ext}"
+            img_path = os.path.splitext(WORKSPACE.path)[0] + f".pywrtrace.{ext}"
             for stale in _trace_image_glob():   # drop an old image of another type
                 if stale != img_path and os.path.isfile(stale):
                     os.remove(stale)
@@ -838,8 +756,7 @@ def _sweep_run_temps(directory):
     force-quit or a crash skips that — and the snapshot has to sit beside the
     model (the runner chdirs there so relative table urls resolve), so they
     pile up in the user's model folder for ever."""
-    live = {rid for rid, r in RUNS.items()
-            if r.get("status") in ("queued", "running")}
+    live = RUNS.live_ids()
     try:
         names = os.listdir(directory)
     except OSError:
@@ -854,7 +771,7 @@ def _sweep_run_temps(directory):
 
 
 def _run_worker(run_id, model_snapshot, model_path, overrides):
-    run = RUNS[run_id]
+    run = RUNS.by_id[run_id]
     python = envsetup.env_python()
     workdir = os.path.dirname(model_path) if model_path else tempfile.gettempdir()
     _sweep_run_temps(workdir)
@@ -912,30 +829,30 @@ def _run_worker(run_id, model_snapshot, model_path, overrides):
 def start_run():
     body = request.get_json(force=True)
     try:
-        _require_model()
+        WORKSPACE.require_model()
     except ValueError as exc:
         return _err(exc)
     info = envsetup.check_env()
     if not info["ready"]:
         return _err("PyWR environment is not ready — click 'Set up PyWR' first",
                     409)
-    with LOCK:
-        model_snapshot = json.loads(json.dumps(STATE["model"]))
-        model_io.inject_positions(model_snapshot, STATE["positions"])
-        model_path = STATE["path"]
+    with WORKSPACE.lock:
+        model_snapshot = json.loads(json.dumps(WORKSPACE.model))
+        model_io.inject_positions(model_snapshot, WORKSPACE.positions)
+        model_path = WORKSPACE.path
         # block the run if data files are still missing — pywr would fail
         # deep in a worker with a cryptic message
-        if STATE["data"] and STATE["data"].get("missing"):
-            miss = ", ".join(STATE["data"]["missing"])
+        if WORKSPACE.data and WORKSPACE.data.get("missing"):
+            miss = ", ".join(WORKSPACE.data["missing"])
             return _err(f"cannot run — data file(s) not found: {miss}. "
                         "Add the folder that holds them (Data tab).", 409)
         overrides = dict(body.get("overrides") or {})
-        if STATE["data"] and STATE["data"].get("map"):
-            overrides["url_map"] = STATE["data"]["map"]
+        if WORKSPACE.data and WORKSPACE.data.get("map"):
+            overrides["url_map"] = WORKSPACE.data["map"]
         # scenario picker: which combination to dump (the model still solves
         # the whole ensemble; this only chooses the member to show)
-        n_comb = graphops.scenario_combinations(STATE["model"])
-        scen_dims = graphops.scenario_dims(STATE["model"])
+        n_comb = graphops.scenario_combinations(WORKSPACE.model)
+        scen_dims = graphops.scenario_dims(WORKSPACE.model)
         scen_idx = 0
         if n_comb > 1 and body.get("scenario_index") is not None:
             try:
@@ -945,16 +862,16 @@ def start_run():
         if scen_idx:
             overrides["scenario_index"] = scen_idx
     run_id = uuid.uuid4().hex[:8]
-    RUNS[run_id] = {
+    RUNS.by_id[run_id] = {
         "id": run_id, "status": "queued",
-        "label": body.get("label") or f"run {len(RUN_ORDER) + 1}",
+        "label": body.get("label") or f"run {len(RUNS.order) + 1}",
         "overrides": body.get("overrides") or None,
         "scenario_index": scen_idx,
         "scenario_label": (graphops.combo_label(scen_dims, scen_idx)
                            if n_comb > 1 else None),
         "started_at": time.time(),
     }
-    RUN_ORDER.append(run_id)
+    RUNS.order.append(run_id)
     threading.Thread(target=_run_worker,
                      args=(run_id, model_snapshot, model_path,
                            overrides or None),
@@ -965,8 +882,8 @@ def start_run():
 @app.get("/api/runs")
 def list_runs():
     out = []
-    for rid in RUN_ORDER:
-        run = RUNS[rid]
+    for rid in RUNS.order:
+        run = RUNS.by_id[rid]
         out.append({"id": rid, "status": run["status"], "label": run["label"],
                     "error": run.get("error"),
                     "n_steps": len(run.get("dates", [])),
@@ -1119,16 +1036,16 @@ def save_run(run_id):
     body = request.get_json(force=True, silent=True) or {}
     path = body.get("path")
     if not path:
-        if not STATE["path"]:
+        if not WORKSPACE.path:
             return _err("save the model first, or give a path")
-        stem = os.path.splitext(STATE["path"])[0]
+        stem = os.path.splitext(WORKSPACE.path)[0]
         path = f"{stem}.{_safe_stem(run['label'])}.pywrrun.json"
     payload = {"pywr_reader_run": 1, "label": run["label"],
                "dates": run["dates"], "nodes": run["nodes"],
                "edges": run["edges"], "meta": run.get("meta"),
                "warnings": run.get("warnings", []),
                "overrides": run.get("overrides"),
-               "model": os.path.basename(STATE["path"] or "")}
+               "model": os.path.basename(WORKSPACE.path or "")}
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
@@ -1157,7 +1074,7 @@ def open_run():
     run_id = uuid.uuid4().hex[:8]
     max_flow = max((max(e["series"]) for e in data["edges"]
                     if e.get("series")), default=0.0)
-    RUNS[run_id] = {
+    RUNS.by_id[run_id] = {
         "id": run_id, "status": "done",
         "label": data.get("label") or os.path.basename(path),
         "dates": data["dates"], "nodes": data["nodes"], "edges": data["edges"],
@@ -1165,7 +1082,7 @@ def open_run():
         "overrides": data.get("overrides"), "started_at": time.time(),
         "max_edge_flow": max_flow, "loaded_from": path,
     }
-    RUN_ORDER.append(run_id)
+    RUNS.order.append(run_id)
     return jsonify({"ok": True, "run_id": run_id})
 
 

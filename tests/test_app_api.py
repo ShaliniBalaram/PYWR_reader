@@ -26,9 +26,7 @@ class TestApi(unittest.TestCase):
         app_module.app.testing = True
         self.c = app_module.app.test_client()
         # reset shared state between tests
-        app_module.STATE.update(model=None, positions={}, path=None,
-                                dirty=False, warnings=[], data_dirs=[],
-                                data=None)
+        app_module.WORKSPACE.reset()
 
     def _open_example(self):
         return self.c.post("/api/open", json={"path": EXAMPLE})
@@ -278,7 +276,7 @@ class TestApi(unittest.TestCase):
     def _fake_run(self, label="run 1"):
         """A finished run in memory, without needing pywr."""
         rid = "test1234"
-        app_module.RUNS[rid] = {
+        app_module.RUNS.by_id[rid] = {
             "id": rid, "status": "done", "label": label,
             "dates": ["2000-01-01", "2000-01-02"],
             "nodes": {"Res": {"volume": [10.0, 11.0]},
@@ -290,12 +288,12 @@ class TestApi(unittest.TestCase):
             "meta": {"solver": "glpk"}, "warnings": [], "overrides": None,
             "started_at": 0, "max_edge_flow": 4.0,
         }
-        app_module.RUN_ORDER.append(rid)
+        app_module.RUNS.order.append(rid)
         return rid
 
     def tearDown(self):
         app_module.RUNS.clear()
-        app_module.RUN_ORDER.clear()
+        app_module.RUNS.order.clear()
 
     def test_whole_run_csv_has_every_node_and_edge(self):
         rid = self._fake_run()
@@ -318,9 +316,9 @@ class TestApi(unittest.TestCase):
     def test_node_csv_has_a_column_per_compared_run(self):
         rid = self._fake_run("base")
         other = "test5678"
-        app_module.RUNS[other] = dict(app_module.RUNS[rid], id=other,
+        app_module.RUNS.by_id[other] = dict(app_module.RUNS.by_id[rid], id=other,
                                       label="what-if")
-        app_module.RUN_ORDER.append(other)
+        app_module.RUNS.order.append(other)
         r = self.c.get(f"/api/run/{rid}/node.csv?node=Res&compare={other}")
         rows = r.data.decode("utf-8-sig").splitlines()
         self.assertEqual(rows[0], "date,base (volume),what-if (volume)")
@@ -333,7 +331,7 @@ class TestApi(unittest.TestCase):
                          .status_code, 404)
 
     def test_csv_of_an_unfinished_run_is_404(self):
-        app_module.RUNS["pending"] = {"id": "pending", "status": "running",
+        app_module.RUNS.by_id["pending"] = {"id": "pending", "status": "running",
                                       "label": "x"}
         self.assertEqual(self.c.get("/api/run/pending/csv").status_code, 404)
 
@@ -345,10 +343,10 @@ class TestApi(unittest.TestCase):
         self.assertTrue(os.path.isfile(out))
 
         app_module.RUNS.clear()          # the app restarts; memory is gone
-        app_module.RUN_ORDER.clear()
+        app_module.RUNS.order.clear()
         opened = self.c.post("/api/run/open", json={"path": out}).get_json()
         self.assertTrue(opened["ok"])
-        run = app_module.RUNS[opened["run_id"]]
+        run = app_module.RUNS.by_id[opened["run_id"]]
         self.assertEqual(run["label"], "baseline")
         self.assertEqual(run["status"], "done")
         self.assertEqual(run["dates"], ["2000-01-01", "2000-01-02"])
@@ -385,7 +383,7 @@ class TestApi(unittest.TestCase):
         live = os.path.join(tmp, app_module.RUN_TMP_PREFIX + "alive.json")
         for p in (orphan, live):
             open(p, "w").close()
-        app_module.RUNS["alive"] = {"id": "alive", "status": "running",
+        app_module.RUNS.by_id["alive"] = {"id": "alive", "status": "running",
                                     "label": "x"}
         app_module._sweep_run_temps(tmp)
         self.assertFalse(os.path.exists(orphan), "orphan not swept")
@@ -467,16 +465,16 @@ class TestApi(unittest.TestCase):
         self.assertEqual(res.get_json()["n_parameters"],
                          len(raw["parameters"]))
         # it landed in the live model, and the file is now dirty (not written)
-        self.assertIn("hand_written", app_module.STATE["model"]["parameters"])
+        self.assertIn("hand_written", app_module.WORKSPACE.model["parameters"])
         self.assertTrue(res.get_json()["dirty"])
 
     def test_raw_edit_keeps_existing_positions(self):
         self._open_example()
-        before = dict(app_module.STATE["positions"])
+        before = dict(app_module.WORKSPACE.positions)
         raw = self.c.get("/api/model/raw").get_json()
         raw["metadata"]["title"] = "renamed"
         self.c.post("/api/model/raw", json={"model": raw})
-        self.assertEqual(app_module.STATE["positions"], before)
+        self.assertEqual(app_module.WORKSPACE.positions, before)
 
     def test_raw_edit_places_a_newly_added_node(self):
         raw = self._raw()
@@ -485,7 +483,7 @@ class TestApi(unittest.TestCase):
         res = self.c.post("/api/model/raw", json={"model": raw})
         self.assertEqual(res.status_code, 200)
         # a node with no position in the JSON still gets one
-        self.assertIn("Hand_Added", app_module.STATE["positions"])
+        self.assertIn("Hand_Added", app_module.WORKSPACE.positions)
 
     def test_raw_edit_rename_rewrites_references(self):
         raw = self._raw()
@@ -497,7 +495,7 @@ class TestApi(unittest.TestCase):
         res = self.c.post("/api/model/raw",
                           json={"model": raw, "renames": {old: new}})
         self.assertEqual(res.status_code, 200, res.get_json())
-        model = app_module.STATE["model"]
+        model = app_module.WORKSPACE.model
         # no edge still points at the old name
         self.assertFalse(any(old in e for e in model["edges"]))
         self.assertTrue(any(new in e for e in model["edges"]))
@@ -509,14 +507,14 @@ class TestApi(unittest.TestCase):
         raw = self.c.get("/api/model/raw").get_json()
         old = raw["nodes"][0]["name"]
         new = "Moved_Check"
-        was = list(app_module.STATE["positions"][old])
+        was = list(app_module.WORKSPACE.positions[old])
         raw["nodes"][0]["name"] = new
         raw["nodes"][0].pop("position", None)   # position only in app state
         self.c.post("/api/model/raw", json={"model": raw,
                                             "renames": {old: new}})
         # the renamed node keeps its spot instead of being re-placed
-        self.assertNotIn(old, app_module.STATE["positions"])
-        self.assertEqual(app_module.STATE["positions"][new], was)
+        self.assertNotIn(old, app_module.WORKSPACE.positions)
+        self.assertEqual(app_module.WORKSPACE.positions[new], was)
 
     def test_raw_edit_rename_onto_an_existing_name_is_rejected(self):
         raw = self._raw()
@@ -556,7 +554,7 @@ class TestApi(unittest.TestCase):
             self.assertEqual(res.status_code, 400, model)
             self.assertIn(expect, res.get_json()["error"], model)
         # a rejected edit leaves the loaded model untouched
-        self.assertEqual(len(app_module.STATE["model"]["nodes"]),
+        self.assertEqual(len(app_module.WORKSPACE.model["nodes"]),
                          len(raw["nodes"]))
 
     def test_raw_edit_needs_a_model_key(self):
