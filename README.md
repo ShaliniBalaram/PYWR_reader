@@ -304,8 +304,10 @@ PYWR_reader/
 │   ├── envsetup.py           one-click pywr environment bootstrap
 │   └── runner.py             executed inside .pywr-env — runs pywr, dumps series
 ├── static/                   frontend — native ES modules (no build step)
-│   ├── app.js                    entry module: canvas, editing, runs, wiring
-│   └── state / palette / dom / api.js   shared state, colours, DOM + API helpers
+│   ├── app.js                    the network canvas, editing, runs + wiring
+│   ├── state / palette / dom / api.js   shared state, colours, DOM + API helpers
+│   ├── dataviewer.js             the h5/xlsx/csv table + plot modal
+│   └── explorer.js               Browse model + edit-as-JSON
 ├── tests/                    132 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
