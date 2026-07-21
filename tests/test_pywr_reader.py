@@ -14,7 +14,8 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from pywr_reader import (  # noqa: E402
     dataresolve,
@@ -463,6 +464,180 @@ class TestRewriteNodeRefs(unittest.TestCase):
         before = json.loads(json.dumps(model))
         self.assertEqual(graphops.rewrite_node_refs(model, "ghost", "x"), [])
         self.assertEqual(model, before)
+
+
+def wired_model():
+    """A node whose max_flow is a parameter built from two others, with a
+    recorder on the node and a parameter reading that recorder — the shape
+    every demand centre in a real zone model has."""
+    return {
+        "nodes": [
+            {"name": "DC", "type": "output", "max_flow": "DC_max_flow",
+             "cost": -2000},
+            {"name": "src", "type": "input", "max_flow": 5},
+        ],
+        "edges": [["src", "DC"]],
+        "tables": {"licences": {"url": "l.csv", "index_col": "Node"}},
+        "parameters": {
+            "DC_max_flow": {"type": "Aggregated", "agg_func": "product",
+                            "parameters": ["DC_base", "DC_factor"]},
+            "DC_base": {"type": "constant", "table": "licences",
+                        "index": "DC", "column": "Demand"},
+            "DC_factor": {"type": "MonthlyProfile", "table": "licences",
+                          "column": "Seasonal factor"},
+            "DC_threshold": {"type": "RecorderThresholdParameter",
+                             "recorder": "DC_deficit", "predicate": "GT"},
+        },
+        "recorders": {
+            "DC_flow": {"type": "NumpyArrayNodeRecorder", "node": "DC"},
+            "DC_deficit": {"type": "NumpyArrayNodeDeficitRecorder", "node": "DC"},
+            "DC_max_flow_rec": {"type": "NumpyArrayParameterRecorder",
+                                "parameter": "DC_max_flow"},
+        },
+    }
+
+
+class TestDefinitionRefs(unittest.TestCase):
+    """Parameters, recorders and tables are wired by name just as nodes are,
+    so renaming one has to carry its references and deleting one has to say
+    what it leaves dangling."""
+
+    def test_finds_a_parameter_named_by_a_node_and_by_a_recorder(self):
+        refs = graphops.find_definition_refs(wired_model(), "parameters",
+                                             "DC_max_flow")
+        self.assertEqual(sorted(refs),
+                         ["nodes[0].max_flow",
+                          "recorders.DC_max_flow_rec.parameter"])
+
+    def test_finds_a_parameter_inside_another_parameters_operand_list(self):
+        refs = graphops.find_definition_refs(wired_model(), "parameters", "DC_base")
+        self.assertEqual(refs, ["parameters.DC_max_flow.parameters[0]"])
+
+    def test_finds_a_recorder_named_by_a_parameter(self):
+        refs = graphops.find_definition_refs(wired_model(), "recorders",
+                                             "DC_deficit")
+        self.assertEqual(refs, ["parameters.DC_threshold.recorder"])
+
+    def test_a_table_is_referenced_only_at_table_keys(self):
+        refs = graphops.find_definition_refs(wired_model(), "tables", "licences")
+        self.assertEqual(sorted(refs),
+                         ["parameters.DC_base.table", "parameters.DC_factor.table"])
+
+    def test_literal_keys_are_never_read_as_references(self):
+        # a parameter named after the value of a "column"/"index"/"type" must
+        # not drag those strings along when it is renamed
+        model = wired_model()
+        model["parameters"]["Demand"] = {"type": "constant", "value": 1}
+        self.assertEqual(graphops.find_definition_refs(model, "parameters",
+                                                       "Demand"), [])
+
+    def test_a_node_name_is_not_mistaken_for_a_parameter(self):
+        model = wired_model()
+        model["parameters"]["DC"] = {"type": "constant", "value": 1}
+        # recorders.DC_flow.node is "DC" — a node reference, not this parameter
+        self.assertEqual(graphops.find_definition_refs(model, "parameters", "DC"),
+                         [])
+
+
+class TestRenameDefinition(unittest.TestCase):
+    def test_rename_carries_every_reference_and_keeps_the_key_order(self):
+        model = wired_model()
+        notes = graphops.rename_definition(model, "parameters", "DC_max_flow",
+                                           "demand_cap")
+        self.assertTrue(notes)
+        self.assertEqual(model["nodes"][0]["max_flow"], "demand_cap")
+        self.assertEqual(model["recorders"]["DC_max_flow_rec"]["parameter"],
+                         "demand_cap")
+        self.assertNotIn("DC_max_flow", model["parameters"])
+        # renamed in place: a rename that reorders the block makes a one-line
+        # change look like a whole-file rewrite when saved
+        self.assertEqual(list(model["parameters"])[0], "demand_cap")
+        self.assertEqual(graphops.dangling_references(model), [])
+
+    def test_renaming_a_recorder_updates_the_parameter_that_reads_it(self):
+        model = wired_model()
+        graphops.rename_definition(model, "recorders", "DC_deficit", "shortfall")
+        self.assertEqual(model["parameters"]["DC_threshold"]["recorder"],
+                         "shortfall")
+        self.assertEqual(graphops.dangling_references(model), [])
+
+    def test_renaming_a_table_updates_the_parameters_that_read_it(self):
+        model = wired_model()
+        graphops.rename_definition(model, "tables", "licences", "wrz_licences")
+        self.assertEqual(model["parameters"]["DC_base"]["table"], "wrz_licences")
+        self.assertEqual(model["parameters"]["DC_factor"]["table"], "wrz_licences")
+
+    def test_a_name_used_by_both_blocks_is_reported_rather_than_guessed(self):
+        # parameters and recorders are separate namespaces in pywr, so the same
+        # name can mean either — a bare reference cannot be resolved safely
+        model = wired_model()
+        model["parameters"]["twin"] = {"type": "constant", "value": 1}
+        model["recorders"]["twin"] = {"type": "NumpyArrayNodeRecorder",
+                                      "node": "DC"}
+        model["parameters"]["uses"] = {"type": "negative", "parameter": "twin"}
+        notes = graphops.rename_definition(model, "parameters", "twin", "clear")
+        self.assertIn("twin", model["parameters"]["uses"]["parameter"],
+                      "an ambiguous reference must be left alone, not guessed")
+        self.assertTrue(any("both a parameter and a recorder" in n for n in notes))
+
+    def test_rename_rejects_a_name_already_taken(self):
+        model = wired_model()
+        with self.assertRaises(ValueError):
+            graphops.rename_definition(model, "parameters", "DC_base", "DC_factor")
+
+    def test_rename_rejects_an_unknown_entry(self):
+        with self.assertRaises(ValueError):
+            graphops.rename_definition(wired_model(), "parameters", "ghost", "x")
+
+
+class TestDeleteDefinition(unittest.TestCase):
+    def test_delete_warns_naming_what_still_points_at_it(self):
+        model = wired_model()
+        warnings = graphops.delete_definition(model, "parameters", "DC_base")
+        self.assertNotIn("DC_base", model["parameters"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("parameters.DC_max_flow.parameters[0]", warnings[0])
+
+    def test_delete_of_something_unused_is_quiet(self):
+        model = wired_model()
+        self.assertEqual(
+            graphops.delete_definition(model, "recorders", "DC_flow"), [])
+
+    def test_delete_goes_through_even_when_referenced(self):
+        # a warning, not a veto: mid-restructure you may well want it gone
+        model = wired_model()
+        graphops.delete_definition(model, "parameters", "DC_max_flow")
+        self.assertNotIn("DC_max_flow", model["parameters"])
+
+
+class TestDanglingReferences(unittest.TestCase):
+    def test_a_wired_model_is_clean(self):
+        self.assertEqual(graphops.dangling_references(wired_model()), [])
+
+    def test_a_node_pointing_at_a_missing_parameter_is_reported(self):
+        model = wired_model()
+        del model["parameters"]["DC_max_flow"]
+        found = graphops.dangling_references(model)
+        self.assertTrue(any("nodes[0].max_flow" in f and "DC_max_flow" in f
+                            for f in found), found)
+
+    def test_a_missing_recorder_behind_a_threshold_is_reported(self):
+        model = wired_model()
+        del model["recorders"]["DC_deficit"]
+        self.assertTrue(any("DC_threshold.recorder" in f
+                            for f in graphops.dangling_references(model)))
+
+    def test_enum_values_and_data_columns_are_not_reported(self):
+        # "product", "GT", "Demand", "Seasonal factor" name nothing, and must
+        # not be read as broken references
+        found = graphops.dangling_references(wired_model())
+        self.assertEqual(found, [], f"false alarms: {found}")
+
+    def test_the_bundled_example_model_is_clean(self):
+        example = os.path.join(ROOT, "examples", "gw_network", "pywr_model.json")
+        with open(example, encoding="utf-8") as fh:
+            found = graphops.dangling_references(json.load(fh))
+        self.assertEqual(found, [], f"false alarms: {found}")
 
 
 class TestLayoutPicker(unittest.TestCase):

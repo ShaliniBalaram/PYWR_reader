@@ -22,14 +22,21 @@ function compactVal(v) {
   return bits.length ? bits.join(" · ") : "{…}";
 }
 
-function detailRow(name, def, onEdit) {
+function detailRow(name, def, actions = {}) {
+  const button = (label, title, fn, cls) => el("button", {
+    class: "tiny " + (cls || ""), title,
+    onclick: e => { e.preventDefault(); e.stopPropagation(); fn(); },
+  }, label);
   return el("details", {},
     el("summary", {}, name,
       el("span", { class: "pill-type" }, compactVal(def)),
-      onEdit ? el("button", {
-        class: "tiny row-edit", title: "Edit this entry as JSON",
-        onclick: e => { e.preventDefault(); e.stopPropagation(); onEdit(); },
-      }, "{ } edit") : null),
+      el("span", { class: "row gap row-edit" },
+        actions.onEdit ? button("{ } edit", "Edit this entry as JSON",
+          actions.onEdit) : null,
+        actions.onRename ? button("rename",
+          "Rename, updating everything that refers to it", actions.onRename) : null,
+        actions.onDelete ? button("✕", "Remove this entry",
+          actions.onDelete, "danger-quiet") : null)),
     el("pre", {}, JSON.stringify(def, null, 2)));
 }
 
@@ -79,12 +86,16 @@ export async function openModelExplorer() {
   try { raw = await api("/api/model/raw"); }
   catch (err) { return toast(err.message, true); }
 
-  const nodes = raw.nodes || [];
-  const edges = raw.edges || [];
-  const params = raw.parameters || {};
-  const tables = raw.tables || {};
-  const recorders = raw.recorders || {};
-  const SECTIONS = [
+  let nodes, edges, params, tables, recorders;
+  const readRaw = () => {
+    nodes = raw.nodes || [];
+    edges = raw.edges || [];
+    params = raw.parameters || {};
+    tables = raw.tables || {};
+    recorders = raw.recorders || {};
+  };
+  readRaw();
+  const sections = () => [
     ["Overview", 1],
     ["Nodes", nodes.length],
     ["Edges", edges.length],
@@ -94,11 +105,33 @@ export async function openModelExplorer() {
   ];
   let active = "Overview";
 
+  /** Pull the model again and redraw, staying on the section you were in —
+   *  for edits made from a row, which change the model without closing this. */
+  async function reload() {
+    raw = await api("/api/model/raw");
+    readRaw();
+    renderNav();
+    renderBody();
+  }
+
   const filter = el("input", { class: "explorer-filter", type: "text",
     placeholder: "Filter by name / type…",
     oninput: () => renderBody() });
   const bodyEl = el("div", { class: "explorer-body" });
   const nav = el("div", { class: "explorer-nav" });
+
+  /** Put the explorer back in the modal. These elements are kept, not rebuilt,
+   *  so a dialog opened over the explorer (rename) can hand it back with the
+   *  filter text and the section you were in intact. */
+  function showExplorer() {
+    openModal(
+      el("h3", {}, (raw.metadata && raw.metadata.title) || "Model"),
+      nav, filter, bodyEl,
+      el("div", { class: "row gap", style: "margin-top:10px; justify-content:flex-end" },
+        el("button", { onclick: closeModal }, "Close")),
+    );
+    $("modal").classList.add("explorer");
+  }
 
   function keyScalars(obj) {
     // one-line summary of a node's own scalar attributes
@@ -147,6 +180,77 @@ export async function openModelExplorer() {
         }, renames);
       });
   }
+  /** How many places refer to an entry — asked before renaming or deleting so
+   *  the dialog can say what is at stake rather than guessing. */
+  async function refCount(section, name) {
+    try {
+      const res = await api(
+        `/api/definition/refs?section=${encodeURIComponent(section)}`
+        + `&name=${encodeURIComponent(name)}`);
+      return (res.refs || []).length;
+    } catch { return null; }
+  }
+  const places = n =>
+    n == null ? "" : `${n} ${n === 1 ? "place refers" : "places refer"} to it`;
+
+  async function renameEntry(section, name) {
+    const used = await refCount(section, name);
+    const box = el("input", { type: "text", value: name, style: "width:100%" });
+    const err = el("div", { class: "json-err hidden" });
+    const go = async () => {
+      const next = box.value.trim();
+      if (!next || next === name) return showExplorer();
+      try {
+        const payload = await api("/api/definition/rename",
+          { section, old: name, new: next });
+        updateGraph(payload);
+        // a filter holding the old name would hide the row you just renamed
+        if (filter.value.trim() === name) filter.value = next;
+        await reload();
+        showExplorer();
+        const notes = (payload.notes || []).length;
+        toast(`Renamed to ${next}`
+          + (notes ? ` — ${notes} reference${notes > 1 ? "s" : ""} updated` : "")
+          + ". Save to write it to the file");
+      } catch (e) {
+        err.textContent = e.message; err.classList.remove("hidden");
+      }
+    };
+    box.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    openModal(
+      el("h3", {}, `Rename ${section.replace(/s$/, "")} · ${name}`),
+      el("p", { class: "muted small" },
+        used ? `Every reference follows the new name — ${places(used)}.`
+             : "Nothing else refers to this yet."),
+      box, err,
+      el("div", { class: "row gap", style: "margin-top:10px;justify-content:flex-end" },
+        el("button", { onclick: showExplorer }, "Cancel"),
+        el("button", { class: "primary", onclick: go }, "Rename")));
+    box.focus(); box.select();
+  }
+
+  async function deleteEntry(section, name) {
+    const used = await refCount(section, name);
+    const warning = !used ? ""
+      : `\n\n${used} other ${used === 1 ? "place refers" : "places refer"} to it`
+        + ` — ${used === 1 ? "it" : "they"} will point at a name the model no `
+        + "longer defines.";
+    if (!confirm(`Remove ${section.replace(/s$/, "")} “${name}”?${warning}`)) return;
+    try {
+      const payload = await api("/api/definition/delete", { section, name });
+      updateGraph(payload);
+      await reload();
+      (payload.delete_warnings || []).forEach(w => toast(w, true));
+      if (!(payload.delete_warnings || []).length) toast(`Removed ${name}`);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  const rowActions = (section, name, def) => ({
+    onEdit: () => editEntry(section, name, def),
+    onRename: () => renameEntry(section, name),
+    onDelete: () => deleteEntry(section, name),
+  });
+
   const sectionBar = (section, obj) =>
     el("div", { class: "row gap explorer-bar" },
       el("button", { class: "tiny", onclick: () => editSection(section, obj) },
@@ -199,19 +303,19 @@ export async function openModelExplorer() {
     } else if (active === "Parameters") {
       const rows = Object.entries(params)
         .filter(([n, d]) => hit(n, (d && d.type) || ""))
-        .map(([n, d]) => detailRow(n, d, () => editEntry("parameters", n, d)));
+        .map(([n, d]) => detailRow(n, d, rowActions("parameters", n, d)));
       content = el("div", {}, sectionBar("parameters", params),
         rows.length ? el("div", {}, ...rows) : emptyMsg());
     } else if (active === "Tables") {
       const rows = Object.entries(tables)
         .filter(([n, d]) => hit(n, (d && d.url) || ""))
-        .map(([n, d]) => detailRow(n, d, () => editEntry("tables", n, d)));
+        .map(([n, d]) => detailRow(n, d, rowActions("tables", n, d)));
       content = el("div", {}, sectionBar("tables", tables),
         rows.length ? el("div", {}, ...rows) : emptyMsg());
     } else if (active === "Recorders") {
       const rows = Object.entries(recorders)
         .filter(([n, d]) => hit(n, (d && d.type) || ""))
-        .map(([n, d]) => detailRow(n, d, () => editEntry("recorders", n, d)));
+        .map(([n, d]) => detailRow(n, d, rowActions("recorders", n, d)));
       content = el("div", {}, sectionBar("recorders", recorders),
         rows.length ? el("div", {}, ...rows) : emptyMsg());
     }
@@ -222,8 +326,9 @@ export async function openModelExplorer() {
       q() ? "Nothing matches the filter." : "None in this model.");
   }
 
-  nav.replaceChildren(
-    ...SECTIONS.map(([name, count]) => el("button", {
+  function renderNav() {
+    nav.replaceChildren(
+    ...sections().map(([name, count]) => el("button", {
       class: "tiny" + (name === active ? " active" : ""),
       onclick: () => {
         active = name; filter.value = "";
@@ -240,15 +345,10 @@ export async function openModelExplorer() {
         "the file on disk changes only when you Save.",
         applyRawModel) },
       "{ } edit JSON"),
-  );
-
-  openModal(
-    el("h3", {}, (raw.metadata && raw.metadata.title) || "Model"),
-    nav, filter, bodyEl,
-    el("div", { class: "row gap", style: "margin-top:10px; justify-content:flex-end" },
-      el("button", { onclick: closeModal }, "Close")),
-  );
-  $("modal").classList.add("explorer");
+    );
+  }
+  renderNav();
+  showExplorer();
   renderBody();
 }
 

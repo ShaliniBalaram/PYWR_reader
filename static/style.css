@@ -108,7 +108,9 @@ body {
   font-size: 12px; white-space: pre-wrap;
 }
 .json-err.hidden { display: none; }
-.row-edit { margin-left: auto; }
+.row-edit { margin-left: auto; gap: 4px; }
+.tiny.danger-quiet { color: var(--muted); }
+.tiny.danger-quiet:hover { color: #e66767; border-color: var(--critical); }
 .explorer-bar { margin-bottom: 9px; align-items: center; }
 
 /* ---------- live JSON dock ---------- */
@@ -139,6 +141,14 @@ body {
 }
 #dock-bar.hidden { display: none; }
 #dock-bar #dock-bar-msg { flex: 1; }
+#dock-refs {
+  display: flex; align-items: baseline; gap: 10px; flex: none;
+  padding: 5px 10px; font-size: 12px;
+  color: var(--warning); background: #241f10; border-bottom: 1px solid var(--grid);
+}
+#dock-refs.hidden { display: none; }
+.dock-refs-head { flex: none; }
+.dock-refs-list { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* deliberately not .json-edit: that class means the modal editor, and the
    smoke tests reach for it by class */
 .dock-text {

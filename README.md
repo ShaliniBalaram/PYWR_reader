@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**138 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**172 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -77,7 +77,7 @@ themselves rather than fail:
 | unit + API | just Flask | loaders, layout, graph ops, every route |
 | frontend contract | just Flask | that the JS modules still agree with `index.html` and the API blueprints — every `$("id")` looked up exists, every `/api/…` called is served |
 | pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording, reading h5/csv data |
-| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing, the live JSON dock both ways |
+| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing, the live JSON dock both ways, adding/renaming/deleting recorders and parameters |
 | performance | just Flask | a 1,200-node model lays out, opens, and saves within a time budget — the guardrail that keeps real water models responsive |
 
 The frontend has no build step and no test framework, so the contract tests
@@ -219,11 +219,55 @@ edits)** or **Keep editing**. Keep editing is safe: Apply merges onto the model
 as it is *then*, not as it was when the text was drawn, so a change made
 meanwhile is not silently undone.
 
+**Renaming a key is offered, never guessed.** Change `DC_Boyneswood_max_flow`
+to something clearer and Apply asks: *rename it and update every reference, or
+treat it as removing one entry and adding another?* One key gone and one key
+arrived is genuinely ambiguous — it looks the same whether you renamed
+something or swapped it for something else — so the dock asks rather than
+picking for you. Say yes and the entry keeps its place in the file, so a
+rename stays a one-line diff.
+
+If a reference is left pointing at nothing, an amber strip says so with the
+exact path (`parameters.DC_Boyneswood_max_flow.parameters[0] references
+'…_base', which the model does not define`). See
+[Keeping references honest](#keeping-references-honest).
+
 Drag the dock's top edge to resize it; **✕** hides it.
 
-> Renaming a **parameter or recorder** in the dock is not yet tracked the way a
-> node rename is — the old key is removed and the new one added, and anything
-> still pointing at the old name keeps pointing at it.
+## Keeping references honest
+
+A pywr model is held together by names: a node's `max_flow` is the *name* of a
+parameter, an `Aggregated` parameter lists the *names* of others, a
+`RecorderThresholdParameter` names a *recorder*. Rename or delete one carelessly
+and the model breaks somewhere you weren't looking.
+
+**Rename carries every reference.** In **Browse model**, each parameter,
+recorder and table row has a **rename** button. It tells you what is at stake
+first — *"Every reference follows the new name — 3 places refer to it"* — then
+rewrites them all: node attributes, other parameters' operand lists, the
+parameter that reads a recorder, the parameters that read a table. The entry
+keeps its position in the file rather than jumping to the end.
+
+**Delete tells you what you're breaking.** The **✕** on a row says *"2 other
+places refer to it — they will point at a name the model no longer defines"*
+before you commit, and names the exact paths afterwards. It is a warning, not a
+veto: mid-restructure you may well want it gone.
+
+**Dangling references are visible.** Every model change re-checks for names
+referred to but defined nowhere, and the JSON dock shows them in an amber
+strip. They are warnings, never errors — a half-finished edit legitimately has
+them, and pywr is the final judge of what a given node type accepts.
+
+Two deliberate limits:
+
+- pywr keeps parameters and recorders in **separate namespaces**, so the same
+  name can legally mean both. When it does, a bare reference can't be resolved,
+  so those are left alone and the rename says so rather than guessing.
+- The dangling check only follows keys that certainly hold a name (`parameter`,
+  `parameters`, `control_curve`, `recorder`, `table`, the node-reference keys)
+  plus a node's own attributes. A false "undefined" on every load of a valid
+  model would be worse than missing one, so it errs quiet. Both the bundled
+  example and a real 66-node zone model report clean.
 
 ## Editing the JSON directly
 
@@ -344,14 +388,14 @@ PYWR_reader/
 │   ├── session.py            Workspace + RunStore — the open model and its runs
 │   ├── api/                  route blueprints, registered by app.py
 │   │   ├── files.py              open / save / browse / graph / edit-as-JSON
-│   │   ├── edit.py               layouts, node/edge CRUD, path tracing
+│   │   ├── edit.py               layouts, node/edge CRUD, definition rename/delete
 │   │   ├── datafiles.py          locate, preview and plot external data files
 │   │   ├── traceimg.py           the trace-over-image sidecar
 │   │   ├── env.py                pywr environment status + one-click setup
 │   │   └── runs.py               run a model; CSV export; save / open a run
 │   ├── model_io.py           pywr JSON / .tcm / CSV readers, writers
 │   ├── layout.py             layered / force / grouped / radial layouts (no deps)
-│   ├── graphops.py           trace, add/delete/rename, reference rewriting
+│   ├── graphops.py           trace, add/delete/rename, reference rewriting + checks
 │   ├── dataresolve.py        locate external data files by basename
 │   ├── dataview.py           read h5/xlsx/csv (runs inside .pywr-env)
 │   ├── envsetup.py           one-click pywr environment bootstrap
@@ -360,9 +404,9 @@ PYWR_reader/
 │   ├── app.js                    the network canvas, editing, runs + wiring
 │   ├── state / palette / dom / api.js   shared state, colours, DOM + API helpers
 │   ├── dataviewer.js             the h5/xlsx/csv table + plot modal
-│   ├── explorer.js               Browse model + edit-as-JSON
+│   ├── explorer.js               Browse model, edit / rename / delete entries
 │   └── jsondock.js               the live JSON dock that follows the selection
-├── tests/                    138 unittest tests
+├── tests/                    172 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs the API (no deps)
@@ -405,6 +449,9 @@ PYWR_reader/
 - [x] Live JSON dock — a JSON panel that stays open and follows the selection,
       showing a node with the parameters, recorders and tables that hang off
       it; edits flow both ways and unapplied typing is never overwritten
+- [x] Reference safety for parameters, recorders and tables — rename rewrites
+      every reference to them, delete says what it leaves dangling, and names
+      referred to but defined nowhere show as warnings
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file, for model suites that
       split the network and its parameters across separate files

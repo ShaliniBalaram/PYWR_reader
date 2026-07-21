@@ -166,6 +166,25 @@ function renderBar() {
   $("dock-bar").classList.toggle("hidden", !D.stale);
 }
 
+/** Names the model refers to but defines nowhere. Model-wide rather than
+ *  slice-scoped on purpose: deleting a parameter here usually breaks something
+ *  that is not on screen, which is exactly the case worth seeing. */
+function renderRefs() {
+  const warnings = (S.graph && S.graph.reference_warnings) || [];
+  const strip = $("dock-refs");
+  strip.classList.toggle("hidden", !warnings.length);
+  if (!warnings.length) return;
+  const n = warnings.length;
+  strip.title = warnings.join("\n");
+  strip.replaceChildren(
+    el("span", { class: "dock-refs-head" }, n === 1
+      ? "⚠ 1 reference points at a name the model does not define"
+      : `⚠ ${n} references point at names the model does not define`),
+    el("span", { class: "muted small dock-refs-list" },
+      warnings.slice(0, 2).join(" · ")
+      + (warnings.length > 2 ? ` · and ${warnings.length - 2} more` : "")));
+}
+
 function renderHead() {
   $("dock-scopes").querySelectorAll("button").forEach(b =>
     b.classList.toggle("active", b.dataset.scope === D.scope));
@@ -195,7 +214,7 @@ async function renderFromServer() {
     if (seq !== syncSeq) return;
     D.target = null;
     setText("", { enabled: false, placeholder: "No model open." });
-    D.stale = false; renderBar(); renderHead();
+    D.stale = false; renderBar(); renderRefs(); renderHead();
     return;
   }
   if (seq !== syncSeq) return;      // a newer refresh already ran
@@ -217,6 +236,7 @@ async function renderFromServer() {
   }
   D.stale = false;
   renderBar();
+  renderRefs();
   renderHead();
 }
 
@@ -224,7 +244,7 @@ async function renderFromServer() {
  *  it is never overwritten, the dock just says it has fallen behind. */
 function sync() {
   if (!D.open) return;
-  if (isDirty()) { D.stale = true; renderBar(); renderHead(); return; }
+  if (isDirty()) { D.stale = true; renderBar(); renderRefs(); renderHead(); return; }
   renderFromServer();
 }
 
@@ -246,6 +266,17 @@ function readSlice(parsed) {
   return node;
 }
 
+/** One key gone and one key arrived in the same block is usually a rename —
+ *  but it is indistinguishable from deleting one entry and adding another, so
+ *  this only ever proposes. The user's answer decides whether references
+ *  follow; guessing either way would be wrong half the time. */
+function detectRename(had, now) {
+  const gone = had.filter(key => !(key in now));
+  const fresh = Object.keys(now).filter(key => !had.includes(key));
+  return gone.length === 1 && fresh.length === 1
+    ? { old: gone[0], new: fresh[0] } : null;
+}
+
 async function applyDock() {
   if (box().disabled) return;
   let parsed;
@@ -264,6 +295,7 @@ async function applyDock() {
       const i = (model.nodes || []).findIndex(n => n.name === D.target);
       if (i < 0) throw new Error(`node "${D.target}" is no longer in the model`);
       model.nodes[i] = node;
+      const renames = {};
       if (D.scope === "related") {
         for (const section of ["parameters", "recorders", "tables"]) {
           const edited = parsed[section];
@@ -273,16 +305,39 @@ async function applyDock() {
               || Array.isArray(edited))) {
             throw new Error(`"${section}" must be a JSON object`);
           }
-          const block = model[section] || (model[section] = {});
           const now = edited || {};
+          let block = model[section] || (model[section] = {});
+          let renamed = null;
+          const guess = detectRename(had, now);
+          if (guess && confirm(
+            `Rename ${section.replace(/s$/, "")} “${guess.old}” to `
+            + `“${guess.new}”, updating every reference to it?\n\n`
+            + `Cancel treats it as removing “${guess.old}” and adding `
+            + `“${guess.new}”, leaving references pointing at the old name.`)) {
+            renames[section] = { [guess.old]: guess.new };
+            renamed = guess;
+            // swap the key in place: a renamed entry that jumps to the end of
+            // the block turns a one-line rename into a whole-file diff
+            const rebuilt = {};
+            for (const [key, def] of Object.entries(block)) {
+              if (key === guess.old) rebuilt[guess.new] = now[guess.new];
+              else rebuilt[key] = def;
+            }
+            model[section] = block = rebuilt;
+          }
           // an entry the slice arrived with and no longer has was deleted
-          for (const key of had) if (!(key in now)) delete block[key];
-          Object.assign(block, now);
+          for (const key of had) {
+            if (key !== (renamed && renamed.old) && !(key in now)) delete block[key];
+          }
+          for (const [key, def] of Object.entries(now)) {
+            if (key !== (renamed && renamed.new)) block[key] = def;
+          }
         }
       }
-      const renames = node.name !== D.target ? { [D.target]: node.name } : undefined;
-      payload = await api("/api/model/raw", { model, renames });
-      if (renames) S.sel = { kind: "node", name: node.name };
+      if (node.name !== D.target) renames.nodes = { [D.target]: node.name };
+      payload = await api("/api/model/raw", {
+        model, renames: Object.keys(renames).length ? renames : undefined });
+      if (renames.nodes) S.sel = { kind: "node", name: node.name };
     }
     D.base = box().value;      // applied — no longer counts as unsaved typing
     D.stale = false;

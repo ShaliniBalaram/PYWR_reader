@@ -372,5 +372,91 @@ class TestFrontendSmoke(unittest.TestCase):
         # browser logs every 400 as a console error. That 400 is the test.
 
 
+    # -- reference safety for parameters / recorders --------------------
+    def _wire_a_parameter(self):
+        """Give the example model a parameter chain to rename and break."""
+        self.page.evaluate("""async () => {
+          const m = await (await fetch('/api/model/raw')).json();
+          m.parameters = {
+            urban_cap: {type: 'Aggregated', agg_func: 'product',
+                        parameters: ['urban_base']},
+            urban_base: {type: 'constant', value: 7},
+          };
+          m.nodes.find(n => n.name === 'Demand_Urban').max_flow = 'urban_cap';
+          await fetch('/api/model/raw', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model: m}),
+          }).then(r => r.json()).then(updateGraph);
+        }""")
+
+    def _explorer_row_button(self, section, name, label):
+        self.page.evaluate("openModelExplorer()")
+        self.page.wait_for_selector(".explorer-body")
+        self.page.click(f".explorer-nav button[data-sec='{section}']")
+        self.page.fill(".explorer-filter", name)
+        self.page.wait_for_selector(".explorer-body details")
+        self.page.evaluate("""label => {
+          const row = document.querySelector('.explorer-body details summary');
+          [...row.querySelectorAll('button')]
+            .find(b => b.textContent === label).click();
+        }""", arg=label)
+
+    def test_explorer_renames_a_parameter_and_references_follow(self):
+        self._wire_a_parameter()
+        self._explorer_row_button("Parameters", "urban_base", "rename")
+        self.page.wait_for_selector("#modal input[type=text]")
+        # the dialog says what is at stake before you commit
+        self.assertIn("1 place refers to it", self.page.inner_text("#modal p"))
+        self.page.fill("#modal input[type=text]", "urban_baseline")
+        self.page.click("#modal button.primary")
+        self.page.wait_for_selector(".explorer-body details")
+        params = app_module.WORKSPACE.model["parameters"]
+        self.assertIn("urban_baseline", params)
+        self.assertEqual(params["urban_cap"]["parameters"], ["urban_baseline"])
+        self.assertNoConsoleErrors()
+
+    def test_explorer_delete_warns_about_what_still_points_at_it(self):
+        self._wire_a_parameter()
+        self.page.evaluate("window.confirm = () => true")
+        self._explorer_row_button("Parameters", "urban_base", "✕")
+        self.page.wait_for_function(
+            "() => !document.getElementById('toast').classList.contains('hidden')")
+        self.assertIn("still referenced", self.page.inner_text("#toast"))
+        self.assertNotIn("urban_base", app_module.WORKSPACE.model["parameters"])
+        self.assertNoConsoleErrors()
+
+    def test_dock_offers_to_carry_references_when_a_key_is_renamed(self):
+        self._wire_a_parameter()
+        self.page.evaluate("""() => {
+          window.__asked = [];
+          window.confirm = m => { window.__asked.push(m); return true; };
+        }""")
+        self._open_dock("related", node="Demand_Urban")
+        self._edit_dock("""
+          doc.parameters.urban_baseline = doc.parameters.urban_base;
+          delete doc.parameters.urban_base;
+        """)
+        self.page.click("#dock-apply")
+        self.page.wait_for_function(
+            "() => document.getElementById('dock-status').textContent"
+            " === 'in sync'")
+        asked = self.page.evaluate("() => window.__asked")
+        self.assertTrue(asked and "Rename parameter" in asked[0], asked)
+        params = app_module.WORKSPACE.model["parameters"]
+        self.assertEqual(params["urban_cap"]["parameters"], ["urban_baseline"])
+        self.assertNoConsoleErrors()
+
+    def test_dock_flags_a_reference_left_pointing_nowhere(self):
+        self._wire_a_parameter()
+        self._open_dock("related", node="Demand_Urban")
+        self._edit_dock("delete doc.parameters.urban_base;")
+        self.page.click("#dock-apply")
+        self.page.wait_for_selector("#dock-refs:not(.hidden)")
+        strip = self.page.inner_text("#dock-refs")
+        self.assertIn("does not define", strip)
+        self.assertIn("urban_base", strip)
+        self.assertNoConsoleErrors()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

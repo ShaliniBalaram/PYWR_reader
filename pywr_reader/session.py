@@ -60,12 +60,17 @@ class Workspace:
                 "dirs": self.data_dirs}
 
     def graph_payload(self):
-        """The full graph + metadata the frontend renders from."""
+        """The full graph + metadata the frontend renders from.
+
+        reference_warnings is recomputed here rather than cached: it has to
+        reflect the model as it stands after whatever edit just happened, and
+        it costs ~1.5 ms on a 1,200-node model."""
         summary = graphops.graph_summary(self.model, self.positions)
         summary.update({
             "ok": True, "path": self.path, "dirty": self.dirty,
             "layout_was_auto": self.layout_was_auto,
             "warnings": self.warnings, "data": self.data_payload(),
+            "reference_warnings": graphops.dangling_references(self.model),
         })
         return summary
 

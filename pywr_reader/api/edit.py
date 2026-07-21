@@ -130,6 +130,61 @@ def node_delete():
     return jsonify(payload)
 
 
+# ---------------------------------------------------------------------------
+# Parameters / recorders / tables — the definitions nodes are wired to by name
+# ---------------------------------------------------------------------------
+@bp.post("/api/definition/rename")
+def definition_rename():
+    """Rename a parameter, recorder or table and carry every reference to it.
+    The counterpart of /api/node/rename for the non-node blocks."""
+    body = request.get_json(force=True)
+    try:
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            notes = graphops.rename_definition(
+                WORKSPACE.model, body.get("section"), body.get("old"),
+                body.get("new"))
+            WORKSPACE.dirty = True
+    except ValueError as exc:
+        return err(exc)
+    payload = WORKSPACE.graph_payload()
+    payload["notes"] = notes
+    return jsonify(payload)
+
+
+@bp.post("/api/definition/delete")
+def definition_delete():
+    """Remove a parameter, recorder or table, reporting what still points at
+    it. The delete goes through either way — this is a warning, not a veto."""
+    body = request.get_json(force=True)
+    try:
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            warnings = graphops.delete_definition(
+                WORKSPACE.model, body.get("section"), body.get("name"))
+            WORKSPACE.dirty = True
+    except ValueError as exc:
+        return err(exc)
+    payload = WORKSPACE.graph_payload()
+    payload["delete_warnings"] = warnings
+    return jsonify(payload)
+
+
+@bp.get("/api/definition/refs")
+def definition_refs():
+    """Where a definition is referenced from — so the UI can say "3 things
+    use this" before you delete or rename it."""
+    section, name = request.args.get("section"), request.args.get("name")
+    try:
+        WORKSPACE.require_model()
+        if section not in graphops.DEFINITION_SECTIONS:
+            raise ValueError(f"unknown section {section!r}")
+    except ValueError as exc:
+        return err(exc)
+    refs = graphops.find_definition_refs(WORKSPACE.model, section, name)
+    return jsonify({"ok": True, "refs": refs})
+
+
 @bp.post("/api/edge/add")
 def edge_add():
     body = request.get_json(force=True)

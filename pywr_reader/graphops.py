@@ -143,6 +143,210 @@ def _rewrite_references(model, old, new):
     return notes
 
 
+# ---------------------------------------------------------------------------
+# Parameters, recorders and tables are wired together by name, the same way
+# nodes are — a node's "max_flow" holds the name of a parameter, an Aggregated
+# parameter lists the names of others, a RecorderThresholdParameter names a
+# recorder. Renaming one therefore has to carry its references, and deleting
+# one has to say what it leaves dangling.
+# ---------------------------------------------------------------------------
+
+# Keys whose string value is never the name of another definition: free text,
+# a pywr class name, or a coordinate into a data file. Rewriting a name found
+# at one of these would corrupt the model rather than repair it.
+LITERAL_KEYS = frozenset((
+    "name", "type", "comment", "url", "table", "column", "index", "index_col",
+    "key", "agg_func", "predicate", "scenario", "ensemble_names", "position",
+    "interp_day", "kind", "units", "unit", "where",
+))
+
+NODE_REF_KEYS = frozenset((
+    "node", "nodes", "storage_node", "storage_nodes", "storage",
+    "first_node", "second_node",
+))
+RECORDER_REF_KEYS = frozenset(("recorder", "recorders"))
+
+DEFINITION_SECTIONS = ("parameters", "recorders", "tables")
+
+
+def _name_is_ambiguous(model, section, name):
+    """True when the other definition block defines the same name, so a bare
+    reference to it could mean either. pywr keeps parameters and recorders in
+    separate namespaces, so this is legal — just not something a rewrite can
+    resolve on its own."""
+    other = "recorders" if section == "parameters" else "parameters"
+    if section == "tables":
+        return False
+    return name in (model.get(other) or {})
+
+
+def _is_ref(key, section, ambiguous):
+    """Does a string sitting at `key` name an entry of `section`?"""
+    if section == "tables":
+        return key == "table"
+    if key in LITERAL_KEYS or key in NODE_REF_KEYS:
+        return False
+    if key in RECORDER_REF_KEYS:
+        return section == "recorders"
+    # Any other key holding a bare name is a parameter reference in pywr — a
+    # node attribute (max_flow, cost, loss_factor), or a parameter's own
+    # operands (parameters, control_curves, threshold). Recorders are named at
+    # some of those keys too (EventRecorder's threshold), so the key alone
+    # cannot separate them; the name can, as long as only one block defines it.
+    return not ambiguous
+
+
+def _visit_refs(model, section, name, new=None):
+    """Every place `name` is referenced as an entry of `section`, as readable
+    paths. Passing `new` rewrites them in place as it goes."""
+    hits = []
+
+    def visit(container, path, inherited_key):
+        if isinstance(container, dict):
+            for key, val in container.items():
+                where = f"{path}.{key}"
+                if isinstance(val, str):
+                    if val == name and _is_ref(key, section, ambiguous):
+                        hits.append(where)
+                        if new is not None:
+                            container[key] = new
+                else:
+                    visit(val, where, key)
+        elif isinstance(container, list):
+            for i, val in enumerate(container):
+                where = f"{path}[{i}]"
+                if isinstance(val, str):
+                    # a list inherits the key it hangs off: {"parameters": [...]}
+                    if val == name and _is_ref(inherited_key, section, ambiguous):
+                        hits.append(where)
+                        if new is not None:
+                            container[i] = new
+                else:
+                    visit(val, where, inherited_key)
+
+    ambiguous = _name_is_ambiguous(model, section, name)
+    for block in ("nodes", "parameters", "recorders"):
+        visit(model.get(block), block, None)
+    return hits
+
+
+def find_definition_refs(model, section, name):
+    """Where a parameter / recorder / table is referenced from."""
+    return _visit_refs(model, section, name)
+
+
+def rewrite_definition_refs(model, section, old, new):
+    """Point every reference to `old` at `new`, without touching the entry's
+    own key. Returns human-readable notes."""
+    notes = [f"updated reference at {path}"
+             for path in _visit_refs(model, section, old, new=new)]
+    if _name_is_ambiguous(model, section, old):
+        notes.append(
+            f"{old!r} names both a parameter and a recorder — only the "
+            "references that say which one they mean were rewritten; check "
+            "the rest by hand.")
+    return notes
+
+
+def rename_definition(model, section, old, new):
+    """Rename a parameter / recorder / table and carry its references.
+    Key order is preserved, so a renamed entry stays where it was in the
+    file."""
+    if section not in DEFINITION_SECTIONS:
+        raise ValueError(f"cannot rename in {section!r}")
+    singular = section[:-1]
+    block = model.get(section) or {}
+    new = (new or "").strip()
+    if not new:
+        raise ValueError("new name is empty")
+    if old not in block:
+        raise ValueError(f"no {singular} named {old!r}")
+    if old == new:
+        return []
+    if new in block:
+        raise ValueError(f"a {singular} named {new!r} already exists")
+    model[section] = {(new if k == old else k): v for k, v in block.items()}
+    return rewrite_definition_refs(model, section, old, new)
+
+
+def delete_definition(model, section, name):
+    """Remove a parameter / recorder / table. Returns warnings naming what
+    still points at it — deleting something three parameters depend on is
+    allowed, but you should be told."""
+    if section not in DEFINITION_SECTIONS:
+        raise ValueError(f"cannot delete from {section!r}")
+    block = model.get(section) or {}
+    if name not in block:
+        raise ValueError(f"no {section[:-1]} named {name!r}")
+    refs = find_definition_refs(model, section, name)
+    del block[name]
+    model[section] = block
+    if not refs:
+        return []
+    shown = ", ".join(refs[:4])
+    if len(refs) > 4:
+        shown += f" and {len(refs) - 4} more"
+    return [f"{name!r} was still referenced by {len(refs)} "
+            f"{'place' if len(refs) == 1 else 'places'} ({shown}) — those now "
+            "point at a name the model does not define."]
+
+
+# Keys that certainly hold the name of something defined elsewhere. The
+# dangling check uses this narrow list rather than the broad rule above: a
+# false "undefined" warning on every run of a valid model would be worse than
+# missing one, and unknown keys holding enum-ish strings are common.
+CERTAIN_REF_KEYS = frozenset((
+    "parameter", "parameters", "control_curve", "control_curves",
+    "index_parameter", "index_parameters", "recorder", "recorders", "table",
+)) | NODE_REF_KEYS
+
+
+def dangling_references(model):
+    """Names the model refers to but defines nowhere — a typo, or something
+    deleted while things still pointed at it. Reported as warnings, never
+    errors: a half-finished edit legitimately has them, and pywr is the final
+    judge of what a given node type accepts.
+
+    A name counts as defined if any block defines it. Separating the
+    namespaces here would turn every parameter/recorder name collision into a
+    false alarm, and the failure actually worth catching is a name that exists
+    nowhere at all."""
+    known = {n.get("name") for n in model.get("nodes", []) if isinstance(n, dict)}
+    for section in DEFINITION_SECTIONS:
+        known |= set(model.get(section) or {})
+    known.discard(None)
+    out = []
+
+    def check(val, where):
+        if isinstance(val, str) and val not in known:
+            out.append(f"{where} references {val!r}, which the model does not define")
+        elif isinstance(val, list):
+            for i, item in enumerate(val):
+                check(item, f"{where}[{i}]")
+
+    def visit(container, path, on_node):
+        if isinstance(container, dict):
+            for key, val in container.items():
+                where = f"{path}.{key}"
+                if key in CERTAIN_REF_KEYS:
+                    check(val, where)
+                elif on_node and isinstance(val, str) and key not in LITERAL_KEYS:
+                    # a node attribute holding a bare string is a parameter name
+                    check(val, where)
+                elif not isinstance(val, str):
+                    visit(val, where, False)
+        elif isinstance(container, list):
+            for i, item in enumerate(container):
+                visit(item, f"{path}[{i}]", on_node)
+
+    for i, node in enumerate(model.get("nodes", [])):
+        visit(node, f"nodes[{i}]", True)
+    for section in ("parameters", "recorders"):
+        for name, definition in (model.get(section) or {}).items():
+            visit(definition, f"{section}.{name}", False)
+    return out
+
+
 def delete_node(model, name):
     """Remove a node and all its edges. Returns warnings about leftover
     references elsewhere in the model (aggregated nodes, recorders, ...)."""

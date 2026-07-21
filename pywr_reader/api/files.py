@@ -204,27 +204,57 @@ def _validate_model(model):
     return None
 
 
+RENAMEABLE = ("nodes",) + graphops.DEFINITION_SECTIONS
+
+
+def _renames_by_section(renames):
+    """Normalise the two accepted "renames" shapes to {section: {old: new}}.
+    Returns an error string instead when the payload is malformed."""
+    if not isinstance(renames, dict):
+        return "'renames' must be an object"
+    # the flat {old: new} form means node renames — the shape the node editor
+    # has always sent, kept working
+    if all(isinstance(v, str) for v in renames.values()):
+        renames = {"nodes": renames}
+    out = {}
+    for section, pairs in renames.items():
+        if section not in RENAMEABLE:
+            return f"cannot rename in {section!r}"
+        if not isinstance(pairs, dict):
+            return f"'renames.{section}' must be an object of {{old: new}}"
+        for old, new in pairs.items():
+            if not isinstance(old, str) or not isinstance(new, str) or not new:
+                return "'renames' must map a name to a non-empty name"
+        out[section] = pairs
+    return out
+
+
 @bp.post("/api/model/raw")
 def replace_raw_model():
     """Replace the model with hand-edited JSON (the JSON editor's Apply).
     The file on disk is untouched until Save.
 
-    Optional "renames" {old: new} — when the editor sees a node's name change
-    it says so, and the references are rewritten to match before validating
-    (otherwise every edge to that node would look like a dangling one)."""
+    Optional "renames" — when the editor sees a name change it says so, and
+    the references are rewritten to match before validating (otherwise every
+    edge to a renamed node would look like a dangling one). Two accepted
+    shapes: a flat {old: new} of node renames, or {section: {old: new}} for
+    "nodes" / "parameters" / "recorders" / "tables". The renaming has already
+    happened in the edited JSON — only the references are left to carry."""
     body = request.get_json(force=True, silent=True)
     if not isinstance(body, dict) or "model" not in body:
         return err("expected {\"model\": {…}}")
     model = body["model"]
-    renames = body.get("renames") or {}
-    if not isinstance(renames, dict):
-        return err("'renames' must be an object of {old: new}")
+    by_section = _renames_by_section(body.get("renames") or {})
+    if isinstance(by_section, str):
+        return err(by_section)
     notes = []
-    for old, new in renames.items():
-        if not isinstance(old, str) or not isinstance(new, str) or not new:
-            return err("'renames' must map a name to a non-empty name")
-        if old != new:
-            notes.extend(graphops.rewrite_node_refs(model, old, new))
+    for section, pairs in by_section.items():
+        for old, new in pairs.items():
+            if old == new:
+                continue
+            notes.extend(
+                graphops.rewrite_node_refs(model, old, new) if section == "nodes"
+                else graphops.rewrite_definition_refs(model, section, old, new))
     problem = _validate_model(model)
     if problem:
         return err(problem)
@@ -233,7 +263,7 @@ def replace_raw_model():
         # positions come from the edited JSON where it has them, otherwise
         # keep what's on screen so an unrelated edit doesn't scramble the layout
         positions = dict(WORKSPACE.positions)
-        for old, new in renames.items():
+        for old, new in by_section.get("nodes", {}).items():
             if old != new and old in positions:
                 positions[new] = positions.pop(old)   # a rename stays put
         positions.update(model_io.extract_positions(model))

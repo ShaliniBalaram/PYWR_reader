@@ -619,5 +619,104 @@ class TestApi(unittest.TestCase):
         self.assertEqual(ab["series"], [30])           # min(A=50, B=30)
 
 
+class TestDefinitionApi(unittest.TestCase):
+    """Renaming and deleting parameters / recorders / tables over the API —
+    the counterpart of /api/node/rename for the blocks nodes point at."""
+
+    def setUp(self):
+        app_module.app.testing = True
+        self.c = app_module.app.test_client()
+        app_module.WORKSPACE.reset()
+        self.c.post("/api/new", json={"title": "wiring"})
+        model = app_module.WORKSPACE.model
+        model["nodes"] = [{"name": "DC", "type": "output",
+                           "max_flow": "DC_max_flow"}]
+        model["parameters"] = {
+            "DC_max_flow": {"type": "Aggregated", "agg_func": "product",
+                            "parameters": ["DC_base"]},
+            "DC_base": {"type": "constant", "value": 3},
+            "DC_threshold": {"type": "RecorderThresholdParameter",
+                             "recorder": "DC_deficit"},
+        }
+        model["recorders"] = {
+            "DC_deficit": {"type": "NumpyArrayNodeDeficitRecorder", "node": "DC"},
+        }
+
+    def test_rename_a_parameter_carries_the_node_attribute(self):
+        r = self.c.post("/api/definition/rename",
+                        json={"section": "parameters", "old": "DC_max_flow",
+                              "new": "cap"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["notes"])
+        model = app_module.WORKSPACE.model
+        self.assertEqual(model["nodes"][0]["max_flow"], "cap")
+        self.assertEqual(r.get_json()["reference_warnings"], [])
+
+    def test_rename_a_recorder_carries_the_parameter_that_reads_it(self):
+        self.c.post("/api/definition/rename",
+                    json={"section": "recorders", "old": "DC_deficit",
+                          "new": "shortfall"})
+        self.assertEqual(
+            app_module.WORKSPACE.model["parameters"]["DC_threshold"]["recorder"],
+            "shortfall")
+
+    def test_rename_into_a_taken_name_is_refused(self):
+        r = self.c.post("/api/definition/rename",
+                        json={"section": "parameters", "old": "DC_base",
+                              "new": "DC_max_flow"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("already exists", r.get_json()["error"])
+
+    def test_rename_in_an_unrenameable_section_is_refused(self):
+        r = self.c.post("/api/definition/rename",
+                        json={"section": "metadata", "old": "a", "new": "b"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_delete_reports_what_still_points_at_it(self):
+        r = self.c.post("/api/definition/delete",
+                        json={"section": "parameters", "name": "DC_base"})
+        data = r.get_json()
+        self.assertEqual(len(data["delete_warnings"]), 1)
+        self.assertIn("DC_base", data["delete_warnings"][0])
+        # and the payload now carries the dangling reference it created
+        self.assertTrue(any("DC_base" in w for w in data["reference_warnings"]))
+
+    def test_refs_endpoint_counts_before_you_commit(self):
+        r = self.c.get("/api/definition/refs?section=parameters&name=DC_base")
+        self.assertEqual(r.get_json()["refs"],
+                         ["parameters.DC_max_flow.parameters[0]"])
+
+    def test_refs_endpoint_rejects_an_unknown_section(self):
+        r = self.c.get("/api/definition/refs?section=nope&name=x")
+        self.assertEqual(r.status_code, 400)
+
+    def test_raw_model_accepts_renames_per_section(self):
+        # the JSON editors send the rename that already happened in their text
+        model = json.loads(json.dumps(app_module.WORKSPACE.model))
+        model["parameters"]["cap"] = model["parameters"].pop("DC_max_flow")
+        r = self.c.post("/api/model/raw", json={
+            "model": model, "renames": {"parameters": {"DC_max_flow": "cap"}}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(app_module.WORKSPACE.model["nodes"][0]["max_flow"], "cap")
+        self.assertEqual(r.get_json()["reference_warnings"], [])
+
+    def test_raw_model_still_takes_the_flat_node_rename_form(self):
+        # the node editor has always sent {old: new} — that must keep working
+        model = json.loads(json.dumps(app_module.WORKSPACE.model))
+        model["nodes"][0]["name"] = "Demand"
+        r = self.c.post("/api/model/raw",
+                        json={"model": model, "renames": {"DC": "Demand"}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            app_module.WORKSPACE.model["recorders"]["DC_deficit"]["node"],
+            "Demand")
+
+    def test_raw_model_rejects_a_rename_in_a_section_that_has_no_names(self):
+        r = self.c.post("/api/model/raw", json={
+            "model": app_module.WORKSPACE.model,
+            "renames": {"edges": {"a": "b"}}})
+        self.assertEqual(r.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
