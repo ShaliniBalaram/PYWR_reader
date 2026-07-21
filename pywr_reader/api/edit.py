@@ -1,5 +1,6 @@
 """Editing the network: layouts, node/edge CRUD, path tracing."""
 
+import json
 
 from flask import Blueprint, jsonify, request
 
@@ -149,6 +150,51 @@ def definition_rename():
         return err(exc)
     payload = WORKSPACE.graph_payload()
     payload["notes"] = notes
+    return jsonify(payload)
+
+
+@bp.post("/api/definition/add")
+def definition_add():
+    """Add parameters / recorders / tables. Takes a list so a template that
+    creates several at once (a demand centre's whole recorder set) lands as one
+    edit — either all of them or, on a clash, none.
+
+    Optional "node_changes" {name, changes} is applied in the same edit: a
+    parameter chain is only half-built until the node's max_flow points at it,
+    and leaving those two as separate requests means a failure between them
+    leaves the model wired to a parameter that does not exist."""
+    body = request.get_json(force=True)
+    entries = body.get("entries")
+    if entries is None:
+        entries = [{"section": body.get("section"), "name": body.get("name"),
+                    "definition": body.get("definition")}]
+    node_changes = body.get("node_changes") or {}
+    try:
+        WORKSPACE.require_model()
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("expected one entry, or a non-empty 'entries' list")
+        if not isinstance(node_changes, dict):
+            raise ValueError("'node_changes' must be {name, changes}")
+        with WORKSPACE.lock:
+            # stage against a copy so a clash halfway through adds nothing
+            staged = json.loads(json.dumps(WORKSPACE.model))
+            added = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise ValueError("each entry must be an object")
+                graphops.add_definition(staged, entry.get("section"),
+                                        entry.get("name"),
+                                        entry.get("definition"))
+                added.append(entry.get("name"))
+            if node_changes:
+                graphops.update_node(staged, node_changes.get("name"),
+                                     node_changes.get("changes"))
+            WORKSPACE.model = staged
+            WORKSPACE.dirty = True
+    except ValueError as exc:
+        return err(exc)
+    payload = WORKSPACE.graph_payload()
+    payload["added"] = added
     return jsonify(payload)
 
 

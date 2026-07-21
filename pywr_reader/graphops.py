@@ -269,6 +269,24 @@ def rename_definition(model, section, old, new):
     return rewrite_definition_refs(model, section, old, new)
 
 
+def add_definition(model, section, name, definition):
+    """Add one parameter / recorder / table. Refuses to overwrite: replacing an
+    entry is an edit, and should go through the JSON editor where you can see
+    what you are replacing."""
+    if section not in DEFINITION_SECTIONS:
+        raise ValueError(f"cannot add to {section!r}")
+    name = (name or "").strip()
+    if not name:
+        raise ValueError(f"the {section[:-1]} needs a name")
+    if not isinstance(definition, dict):
+        raise ValueError(f"a {section[:-1]} must be a JSON object")
+    block = model.setdefault(section, {})
+    if name in block:
+        raise ValueError(f"a {section[:-1]} named {name!r} already exists")
+    block[name] = definition
+    return definition
+
+
 def delete_definition(model, section, name):
     """Remove a parameter / recorder / table. Returns warnings naming what
     still points at it — deleting something three parameters depend on is
@@ -450,9 +468,31 @@ def combo_label(dims, index):
                      for d, c in zip(dims, coords))
 
 
+def recorders_by_node(model):
+    """{node name: [{name, type}]} for recorders that name a node directly.
+
+    Only direct references — a recorder reading a *parameter* the node uses is
+    about the node too, but the chain is better shown by the JSON dock's
+    related slice than crammed into a per-node list."""
+    out = defaultdict(list)
+    for name, definition in (model.get("recorders") or {}).items():
+        if not isinstance(definition, dict):
+            continue
+        entry = {"name": name, "type": str(definition.get("type", ""))}
+        for key in NODE_REF_KEYS:
+            val = definition.get(key)
+            for target in ([val] if isinstance(val, str) else
+                           val if isinstance(val, list) else []):
+                if isinstance(target, str) and \
+                        not any(e["name"] == name for e in out[target]):
+                    out[target].append(entry)
+    return out
+
+
 def graph_summary(model, positions):
     """Compact JSON-friendly description of the network for the frontend."""
     out_adj, in_adj = build_adjacency(model)
+    on_node = recorders_by_node(model)
     nodes = []
     for node in model.get("nodes", []):
         name = node.get("name", "?")
@@ -465,6 +505,7 @@ def graph_summary(model, positions):
             "in_degree": len(in_adj.get(name, [])),
             "out_degree": len(out_adj.get(name, [])),
             "params": params,
+            "recorders": on_node.get(name, []),
         })
     edges = [{"src": e[0], "dst": e[1], "extra": e[2:]}
              for e in model.get("edges", []) if len(e) >= 2]

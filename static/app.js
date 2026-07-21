@@ -11,6 +11,9 @@ import { dataViewer } from "./dataviewer.js";
 import { openModelExplorer } from "./explorer.js";
 import { initDock, toggleDock, dockModelChanged, dockSelectionChanged }
   from "./jsondock.js";
+import { recordersFor, recorderDef, suggestName as suggestRecorderName }
+  from "./catalog.js";
+import { bundlesBlock } from "./bundles.js";
 
 $("modal-backdrop").addEventListener("mousedown", e => {
   if (e.target === $("modal-backdrop")) closeModal();
@@ -891,6 +894,8 @@ function renderNodePanel() {
       el("p", { class: "muted small" },
         "Values are JSON — numbers, strings, or {…} parameter definitions. " +
         "Δ stages a what-if change without editing the model.")),
+    bundlesBlock(node),
+    recordersBlock(node),
     el("div", { class: "pane-block chart-area" }),
     el("div", { class: "pane-block" },
       el("button", {
@@ -912,6 +917,73 @@ function renderNodePanel() {
       ...NODE_TYPES.map(t => el("option", { value: t }))));
   }
   renderNodeChart();
+}
+
+/* ------------------------------------------------ recorders on this node */
+/** What pywr will write down about this node when the model runs. Real models
+ *  put the same handful on every demand centre, so these are one click each
+ *  rather than a block of hand-written JSON. */
+function recordersBlock(node) {
+  const have = node.recorders || [];
+  const taken = new Set((S.graph.nodes || []).flatMap(n =>
+    (n.recorders || []).map(r => r.name)));
+  const templates = recordersFor(node.type);
+
+  const addRecorders = async entries => {
+    if (!entries.length) return toast("Already recording all of those");
+    try {
+      const payload = await api("/api/definition/add", { entries });
+      updateGraph(payload);
+      selectNode(node.name);
+      const n = (payload.added || []).length;
+      toast(`Added ${n === 1 ? payload.added[0] : n + " recorders"}`
+        + " — Save to write it to the file");
+    } catch (err) { toast(err.message, true); }
+  };
+  const entryFor = template => ({
+    section: "recorders",
+    name: suggestRecorderName(template, node.name, taken),
+    definition: recorderDef(template, node.name),
+  });
+
+  const list = have.length
+    ? el("div", { class: "stack rec-list" }, ...have.map(rec =>
+        el("div", { class: "row gap rec-row" },
+          el("div", { class: "rec-name" }, rec.name,
+            el("div", { class: "muted small mono" }, rec.type)),
+          el("button", {
+            class: "tiny", title: "Remove this recorder",
+            onclick: async () => {
+              try {
+                const payload = await api("/api/definition/delete",
+                  { section: "recorders", name: rec.name });
+                updateGraph(payload);
+                selectNode(node.name);
+                (payload.delete_warnings || []).forEach(w => toast(w, true));
+              } catch (err) { toast(err.message, true); }
+            },
+          }, "✕"))))
+    : el("p", { class: "muted small" },
+        "Nothing is recorded here yet. A run still charts this node — these "
+        + "are the series pywr writes into the results.");
+
+  const missingStandard = templates.filter(t =>
+    t.standard && !taken.has(node.name + t.suffix));
+  return el("div", { class: "pane-block" },
+    el("h3", {}, "Recorders"),
+    list,
+    el("div", { class: "row gap add-recorders" },
+      ...templates.map(t => el("button", {
+        class: "tiny", title: t.hint,
+        onclick: () => addRecorders([entryFor(t)]),
+      }, "+ " + t.label))),
+    missingStandard.length
+      ? el("button", { class: "tiny", style: "margin-top:6px",
+          title: "Add the set a real model puts on every node like this: "
+            + missingStandard.map(t => t.label).join(", "),
+          onclick: () => addRecorders(missingStandard.map(entryFor)) },
+        `+ record the usual things (${missingStandard.length})`)
+      : null);
 }
 
 function paramRow(nodeName, key, val) {

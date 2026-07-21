@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**172 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**191 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -77,7 +77,7 @@ themselves rather than fail:
 | unit + API | just Flask | loaders, layout, graph ops, every route |
 | frontend contract | just Flask | that the JS modules still agree with `index.html` and the API blueprints — every `$("id")` looked up exists, every `/api/…` called is served |
 | pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording, reading h5/csv data |
-| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing, the live JSON dock both ways, adding/renaming/deleting recorders and parameters |
+| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing, the live JSON dock both ways, adding/renaming/deleting recorders and parameters, the parameter-chain templates |
 | performance | just Flask | a 1,200-node model lays out, opens, and saves within a time budget — the guardrail that keeps real water models responsive |
 
 The frontend has no build step and no test framework, so the contract tests
@@ -234,6 +234,67 @@ exact path (`parameters.DC_Boyneswood_max_flow.parameters[0] references
 
 Drag the dock's top edge to resize it; **✕** hides it.
 
+## Adding recorders and parameters
+
+Recorders are what a run actually writes down, and real models put the same
+handful on every node. So they are buttons, not JSON.
+
+**On a node.** The node panel has a **Recorders** block listing everything
+watching the selected node — name and pywr type, each with a **✕** — and a row
+of one-click adds under it. What's offered follows the node: a demand node can
+run a *deficit*, a storage node has a *volume*, everything gets *flow* and
+*total flow*. Each lands named the way the model already names things
+(`DC_Boyneswood_flow`), and a name that would clash gets a suffix rather than
+overwriting.
+
+**+ record the usual things** adds the whole standard set in one edit — flow,
+total flow, and for a demand node the deficit, total deficit and deficit
+frequency. It only offers what's missing, and the count is in the button, so
+running it twice is harmless.
+
+**Whole parameter chains.** A demand centre's capacity is never one parameter —
+it's a base read from a licence table, a monthly profile, and the product of
+the two, with the node's `max_flow` pointing at the result. **Common set-ups**
+on the node panel builds the whole chain:
+
+| Template | For | What it creates |
+|---|---|---|
+| **seasonal demand cap** | demand nodes | `_max_flow_base` (from a table) × `_max_flow_factor` (monthly profile) → `_max_flow`, wired to the node |
+| **annual licence volume** | storage / virtual storage | `_max_volume` read from a table, wired to the node |
+| **base + top-up abstraction** | sources | average and peak output from a table, the top-up above average shaped by a monthly profile, wired to `max_flow` |
+| **deficit alarm** | demand nodes | the deficit recorder, a `RecorderThresholdParameter` over it, and an `EventRecorder` counting sustained spells |
+
+The dialog asks only for what actually differs between one node and the next —
+in practice the table row, since the table, the columns and the profile are the
+same across a model, so those come pre-filled. Reference fields suggest the
+names your model already defines.
+
+**You see the JSON before it lands.** The dialog shows exactly what will be
+created, updating as you type, with a line saying how many entries are new and
+which node attribute will point at them. Nothing is a special kind of
+parameter — it's ordinary JSON afterwards, owned by the same `{ } edit` buttons
+as everything else.
+
+Two things it will not do quietly. An entry that already exists is **left
+alone** rather than overwritten, so running a template on a half-set-up node
+finishes the job instead of clobbering it. And if the entry the node would
+point at is one of those, it says so plainly — *"already exists and is left as
+it is, so the new parameters would not be connected to anything"* — because
+that is the case where you'd otherwise end up with orphans.
+
+**In Browse model.** Each of Parameters, Recorders and Tables has **+ add** with
+a short form for the types models are actually built from — a constant (a fixed
+number, or a row and column of a table), a monthly profile, an `Aggregated`
+combination, a `RecorderThresholdParameter`, an `EventRecorder`, and so on.
+Fields that hold the name of something else (a table, a parameter, a node)
+suggest the names your model already defines, so a reference is picked rather
+than retyped.
+
+Anything the forms don't cover is one dropdown entry away: **Write it as JSON
+myself** gives you the raw editor, with the same validation. The forms are a
+shortcut for the common cases, never a ceiling — pywr has hundreds of types and
+this is deliberately not trying to be a schema for all of them.
+
 ## Keeping references honest
 
 A pywr model is held together by names: a node's `max_flow` is the *name* of a
@@ -310,6 +371,9 @@ and your text stays put, so nothing is lost.
   edit/add/remove parameters (values are JSON — numbers or `{…}` parameter
   definitions), delete nodes/edges (with warnings if something still
   references them).
+- Add recorders to a node in one click, build a whole parameter chain from a
+  template, or add parameters/recorders/tables from a form — see
+  [Adding recorders and parameters](#adding-recorders-and-parameters).
 - Prefer raw JSON? See [the live JSON dock](#the-live-json-dock) for a panel
   that stays open and follows your selection, or
   [Editing the JSON directly](#editing-the-json-directly) for the modal
@@ -405,8 +469,10 @@ PYWR_reader/
 │   ├── state / palette / dom / api.js   shared state, colours, DOM + API helpers
 │   ├── dataviewer.js             the h5/xlsx/csv table + plot modal
 │   ├── explorer.js               Browse model, edit / rename / delete entries
-│   └── jsondock.js               the live JSON dock that follows the selection
-├── tests/                    172 unittest tests
+│   ├── jsondock.js               the live JSON dock that follows the selection
+│   ├── catalog.js                recorder / parameter / chain templates
+│   └── bundles.js                the "common set-ups" dialog with its live preview
+├── tests/                    191 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs the API (no deps)
@@ -443,15 +509,22 @@ PYWR_reader/
 - [x] Editable JSON — the whole model, a section, or a single parameter/node,
       validated before it lands (duplicate names, dangling edges, bad blocks);
       renaming a node rewrites every reference to it
-- [x] Export results — whole-run and per-node CSV; save a run beside the
-      model and reopen it later
-- [x] Data file viewer — table or line-plot of the h5/xlsx/csv a model reads
 - [x] Live JSON dock — a JSON panel that stays open and follows the selection,
       showing a node with the parameters, recorders and tables that hang off
       it; edits flow both ways and unapplied typing is never overwritten
 - [x] Reference safety for parameters, recorders and tables — rename rewrites
       every reference to them, delete says what it leaves dangling, and names
       referred to but defined nowhere show as warnings
+- [x] Guided add for recorders and parameters — per-node one-click
+      recorders that suit the node type, "record the usual things" for the
+      standard set, and add-forms in the explorer whose reference fields
+      suggest the names the model already defines
+- [x] Parameter-chain templates — build a demand centre's base × profile
+      capacity, a licence volume, a base/top-up abstraction or a deficit alarm
+      in one edit, previewed as JSON before it lands and wired to the node
+- [x] Export results — whole-run and per-node CSV; save a run beside the
+      model and reopen it later
+- [x] Data file viewer — table or line-plot of the h5/xlsx/csv a model reads
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file, for model suites that
       split the network and its parameters across separate files

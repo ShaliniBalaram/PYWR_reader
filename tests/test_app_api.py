@@ -711,6 +711,91 @@ class TestDefinitionApi(unittest.TestCase):
             app_module.WORKSPACE.model["recorders"]["DC_deficit"]["node"],
             "Demand")
 
+    def test_add_a_recorder(self):
+        r = self.c.post("/api/definition/add", json={
+            "section": "recorders", "name": "DC_flow",
+            "definition": {"type": "NumpyArrayNodeRecorder", "node": "DC"}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["added"], ["DC_flow"])
+        self.assertIn("DC_flow", app_module.WORKSPACE.model["recorders"])
+
+    def test_added_recorders_come_back_on_the_node_they_watch(self):
+        self.c.post("/api/definition/add", json={
+            "section": "recorders", "name": "DC_flow",
+            "definition": {"type": "NumpyArrayNodeRecorder", "node": "DC"}})
+        node = self.c.get("/api/graph").get_json()["nodes"][0]
+        self.assertIn({"name": "DC_flow", "type": "NumpyArrayNodeRecorder"},
+                      node["recorders"])
+        # the one the fixture starts with is still listed beside it
+        self.assertIn({"name": "DC_deficit",
+                       "type": "NumpyArrayNodeDeficitRecorder"},
+                      node["recorders"])
+
+    def test_add_refuses_to_overwrite(self):
+        r = self.c.post("/api/definition/add", json={
+            "section": "parameters", "name": "DC_base",
+            "definition": {"type": "constant", "value": 1}})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("already exists", r.get_json()["error"])
+        # the existing one is untouched
+        self.assertEqual(app_module.WORKSPACE.model["parameters"]["DC_base"],
+                         {"type": "constant", "value": 3})
+
+    def test_a_batch_add_is_all_or_nothing(self):
+        # the second entry clashes — the first must not be left behind
+        r = self.c.post("/api/definition/add", json={"entries": [
+            {"section": "recorders", "name": "fresh",
+             "definition": {"type": "NumpyArrayNodeRecorder", "node": "DC"}},
+            {"section": "parameters", "name": "DC_base",
+             "definition": {"type": "constant", "value": 1}},
+        ]})
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn("fresh", app_module.WORKSPACE.model["recorders"])
+
+    def test_a_batch_add_lands_together(self):
+        r = self.c.post("/api/definition/add", json={"entries": [
+            {"section": "recorders", "name": "a",
+             "definition": {"type": "NumpyArrayNodeRecorder", "node": "DC"}},
+            {"section": "recorders", "name": "b",
+             "definition": {"type": "TotalFlowNodeRecorder", "node": "DC"}},
+        ]})
+        self.assertEqual(r.get_json()["added"], ["a", "b"])
+        self.assertIn("a", app_module.WORKSPACE.model["recorders"])
+        self.assertIn("b", app_module.WORKSPACE.model["recorders"])
+
+    def test_add_wires_the_node_in_the_same_edit(self):
+        # a parameter chain is half-built until the node points at it
+        r = self.c.post("/api/definition/add", json={
+            "entries": [
+                {"section": "parameters", "name": "cap_base",
+                 "definition": {"type": "constant", "value": 5}},
+                {"section": "parameters", "name": "cap",
+                 "definition": {"type": "Aggregated", "agg_func": "product",
+                                "parameters": ["cap_base"]}},
+            ],
+            "node_changes": {"name": "DC", "changes": {"max_flow": "cap"}}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(app_module.WORKSPACE.model["nodes"][0]["max_flow"], "cap")
+        self.assertEqual(r.get_json()["reference_warnings"], [])
+
+    def test_a_failed_node_change_adds_nothing(self):
+        r = self.c.post("/api/definition/add", json={
+            "entries": [{"section": "parameters", "name": "cap",
+                         "definition": {"type": "constant", "value": 5}}],
+            "node_changes": {"name": "NoSuchNode",
+                             "changes": {"max_flow": "cap"}}})
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn("cap", app_module.WORKSPACE.model["parameters"])
+
+    def test_add_rejects_a_nameless_or_non_object_definition(self):
+        for body in ({"section": "recorders", "name": "",
+                      "definition": {"type": "x"}},
+                     {"section": "recorders", "name": "x", "definition": 5},
+                     {"section": "nodes", "name": "x", "definition": {}}):
+            self.assertEqual(
+                self.c.post("/api/definition/add", json=body).status_code, 400,
+                body)
+
     def test_raw_model_rejects_a_rename_in_a_section_that_has_no_names(self):
         r = self.c.post("/api/model/raw", json={
             "model": app_module.WORKSPACE.model,

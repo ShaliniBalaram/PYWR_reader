@@ -458,5 +458,213 @@ class TestFrontendSmoke(unittest.TestCase):
         self.assertNoConsoleErrors()
 
 
+    # -- adding recorders and parameters without writing JSON -----------
+    def _add_recorder_buttons(self, node):
+        self.page.evaluate("n => selectNode(n)", arg=node)
+        self.page.wait_for_selector(".add-recorders")
+        return self.page.evaluate(
+            "() => [...document.querySelectorAll('.add-recorders button')]"
+            ".map(b => b.textContent.replace('+ ', ''))")
+
+    def test_the_recorders_offered_suit_the_node(self):
+        # a demand node can run a deficit; a storage node has a volume
+        demand = self._add_recorder_buttons("Demand_Urban")
+        self.assertIn("deficit (time series)", demand)
+        self.assertNotIn("volume (time series)", demand)
+        storage = self._add_recorder_buttons("Reservoir_A")
+        self.assertIn("volume (time series)", storage)
+        self.assertNotIn("deficit (time series)", storage)
+        self.assertNoConsoleErrors()
+
+    def test_one_click_adds_a_named_recorder_on_the_node(self):
+        self.page.evaluate("selectNode('River_Outlet')")
+        self.page.wait_for_selector(".add-recorders")
+        self.page.evaluate("""() => [...document.querySelectorAll(
+          '.add-recorders button')].find(
+            b => b.textContent === '+ flow (time series)').click()""")
+        self.page.wait_for_function(
+            "() => 'River_Outlet_flow' in "
+            "  (window.S.nodeIdx.get('River_Outlet').recorders || [])"
+            "    .reduce((a, r) => (a[r.name] = 1, a), {})")
+        self.assertEqual(
+            app_module.WORKSPACE.model["recorders"]["River_Outlet_flow"],
+            {"type": "NumpyArrayNodeRecorder", "node": "River_Outlet"})
+        self.assertNoConsoleErrors()
+
+    def test_the_standard_set_lands_as_one_edit(self):
+        self.page.evaluate("selectNode('Demand_Irrigation')")
+        self.page.wait_for_selector(".add-recorders")
+        # Irrigation_supply already records its flow, so the set offered is
+        # what is missing rather than the whole list
+        self.page.evaluate("""() => [...document.querySelectorAll(
+          '#tab-node button')].find(
+            b => b.textContent.startsWith('+ record the usual')).click()""")
+        self.page.wait_for_function(
+            "() => !document.getElementById('toast').classList.contains('hidden')")
+        recorders = app_module.WORKSPACE.model["recorders"]
+        for suffix, kind in (("_total_flow", "TotalFlowNodeRecorder"),
+                             ("_deficit", "NumpyArrayNodeDeficitRecorder"),
+                             ("_total_deficit", "TotalDeficitNodeRecorder")):
+            name = "Demand_Irrigation" + suffix
+            self.assertIn(name, recorders)
+            self.assertEqual(recorders[name]["type"], kind)
+        self.assertNoConsoleErrors()
+
+    def test_removing_a_recorder_from_the_node_panel(self):
+        self.page.evaluate("selectNode('Demand_Urban')")
+        self.page.wait_for_selector(".rec-row")
+        self.page.evaluate(
+            "() => document.querySelector('.rec-row button').click()")
+        self.page.wait_for_function(
+            "() => !('Urban_supply' in "
+            "  (window.S.nodeIdx.get('Demand_Urban').recorders || [])"
+            "    .reduce((a, r) => (a[r.name] = 1, a), {}))")
+        self.assertNotIn("Urban_supply", app_module.WORKSPACE.model["recorders"])
+        self.assertNoConsoleErrors()
+
+    def test_explorer_adds_a_parameter_from_a_form(self):
+        self.page.evaluate("openModelExplorer()")
+        self.page.wait_for_selector(".explorer-body")
+        self.page.click(".explorer-nav button[data-sec='Parameters']")
+        self.page.click(".explorer-bar button.primary")
+        self.page.wait_for_selector("#modal select")
+        self.page.fill("#modal input[type=text]", "urban_cap")
+        self.page.evaluate("""() => {
+          const labelled = label => [...document.querySelectorAll(
+            '#modal label.stack')].find(
+              l => l.childNodes[0].textContent === label).querySelector('input');
+          labelled('Value').value = '12.5';
+        }""")
+        self.page.click("#modal button.primary")
+        self.page.wait_for_selector(".explorer-body details")
+        self.assertEqual(app_module.WORKSPACE.model["parameters"]["urban_cap"],
+                         {"type": "constant", "value": 12.5})
+        self.assertNoConsoleErrors()
+
+    def test_explorer_add_form_offers_the_models_own_names(self):
+        self.page.evaluate("openModelExplorer()")
+        self.page.wait_for_selector(".explorer-body")
+        self.page.click(".explorer-nav button[data-sec='Recorders']")
+        self.page.click(".explorer-bar button.primary")
+        self.page.wait_for_selector("#modal select")
+        options = self.page.evaluate("""() => {
+          const input = [...document.querySelectorAll('#modal label.stack')]
+            .find(l => l.childNodes[0].textContent === 'Node')
+            .querySelector('input');
+          return [...document.getElementById(
+            input.getAttribute('list')).options].map(o => o.value);
+        }""")
+        # a reference is picked from what the model actually defines
+        self.assertIn("Demand_Urban", options)
+        self.assertIn("Reservoir_A", options)
+        self.assertNoConsoleErrors()
+
+
+    # -- parameter-chain templates --------------------------------------
+    def _open_bundle(self, node, label):
+        self.page.evaluate("n => selectNode(n)", arg=node)
+        self.page.wait_for_selector(".add-recorders")
+        self.page.evaluate("""label => [...document.querySelectorAll(
+          '#tab-node .add-recorders button')].find(
+            b => b.textContent === '+ ' + label).click()""", arg=label)
+        self.page.wait_for_selector(".bundle-preview")
+
+    def _bundle_field(self, label, value):
+        self.page.evaluate("""({label, value}) => {
+          const input = [...document.querySelectorAll('#modal label.stack')]
+            .find(l => l.childNodes[0].textContent === label)
+            .querySelector('input');
+          input.value = value;
+          input.dispatchEvent(new Event('input', {bubbles: true}));
+        }""", arg={"label": label, "value": value})
+
+    def _panel_buttons(self, node):
+        self.page.evaluate("n => selectNode(n)", arg=node)
+        self.page.wait_for_selector("#tab-node")
+        return self.page.evaluate(
+            "() => [...document.querySelectorAll('#tab-node .add-recorders "
+            "button')].map(b => b.textContent.replace('+ ', ''))")
+
+    def test_the_templates_offered_suit_the_node(self):
+        demand = self._panel_buttons("Demand_Urban")
+        self.assertIn("seasonal demand cap", demand)
+        self.assertIn("deficit alarm", demand)
+        self.assertNotIn("annual licence volume", demand)
+        storage = self._panel_buttons("Reservoir_A")
+        self.assertIn("annual licence volume", storage)
+        self.assertNotIn("seasonal demand cap", storage)
+        source = self._panel_buttons("Rainfall_Catchment")
+        self.assertIn("base + top-up abstraction", source)
+        # a plain link needs no set-up, so it is offered none
+        self.assertEqual([b for b in self._panel_buttons("River_Main")
+                          if "abstraction" in b or "cap" in b], [])
+        self.assertNoConsoleErrors()
+
+    def test_a_template_previews_before_it_lands(self):
+        self._open_bundle("Demand_Urban", "seasonal demand cap")
+        self._bundle_field("Row for this node", "Urban")
+        preview = self.page.evaluate(
+            "() => JSON.parse(document.querySelector('.bundle-preview')"
+            ".textContent)")
+        self.assertEqual(sorted(preview), ["Demand_Urban_max_flow",
+                                           "Demand_Urban_max_flow_base",
+                                           "Demand_Urban_max_flow_factor"])
+        # the chain is wired: the product names the two it multiplies
+        self.assertEqual(preview["Demand_Urban_max_flow"]["parameters"],
+                         ["Demand_Urban_max_flow_base",
+                          "Demand_Urban_max_flow_factor"])
+        self.assertIn("max_flow on Demand_Urban will point at it",
+                      self.page.inner_text(".bundle-details"))
+        # nothing has happened yet — a preview is only a preview
+        self.assertNotIn("Demand_Urban_max_flow",
+                         app_module.WORKSPACE.model.get("parameters", {}))
+        self.assertNoConsoleErrors()
+
+    def test_a_template_lands_as_one_edit_and_wires_the_node(self):
+        self._open_bundle("Demand_Urban", "deficit alarm")
+        self.page.click("#modal button.primary")
+        self.page.wait_for_selector("#modal-backdrop", state="hidden")
+        model = app_module.WORKSPACE.model
+        self.assertIn("Demand_Urban_deficit", model["recorders"])
+        threshold = model["parameters"]["EDO_threshold_param_Demand_Urban"]
+        self.assertEqual(threshold["recorder"], "Demand_Urban_deficit")
+        events = model["recorders"]["EDO_events_Demand_Urban"]
+        self.assertEqual(events["threshold"], "EDO_threshold_param_Demand_Urban")
+        self.assertEqual(events["minimum_event_length"], 4)
+        # everything it referred to, it also created
+        self.assertEqual(self.page.evaluate(
+            "() => (window.S.graph.reference_warnings || []).length"), 0)
+        self.assertNoConsoleErrors()
+
+    def test_a_template_leaves_what_is_already_there_alone(self):
+        # Urban_supply already records this node's flow; run the template that
+        # would add a deficit recorder twice and the second is a no-op
+        self._open_bundle("Demand_Urban", "deficit alarm")
+        self.page.click("#modal button.primary")
+        self.page.wait_for_selector("#modal-backdrop", state="hidden")
+        self._open_bundle("Demand_Urban", "deficit alarm")
+        self.assertIn("3 already there and left alone",
+                      self.page.inner_text(".bundle-details"))
+        self.assertNoConsoleErrors()
+
+    def test_a_template_says_when_it_would_not_be_connected(self):
+        # give the node a max_flow parameter of the name the template ends at
+        self.page.evaluate("""async () => {
+          await fetch('/api/definition/add', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({section: 'parameters',
+              name: 'Demand_Urban_max_flow',
+              definition: {type: 'constant', value: 1}}),
+          }).then(r => r.json()).then(updateGraph);
+        }""")
+        self._open_bundle("Demand_Urban", "seasonal demand cap")
+        self._bundle_field("Row for this node", "Urban")
+        self.page.wait_for_selector(".bundle-warn:not(.hidden)")
+        warning = self.page.inner_text(".bundle-warn")
+        self.assertIn("Demand_Urban_max_flow", warning)
+        self.assertIn("would not be connected", warning)
+        self.assertNoConsoleErrors()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

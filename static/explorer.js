@@ -3,6 +3,7 @@
 
 import { api } from "./api.js";
 import { $, el, openModal, closeModal, toast } from "./dom.js";
+import { FORMS } from "./catalog.js";
 // selectNode/updateGraph are canvas-core functions in app.js. app.js also
 // imports openModelExplorer from here, so this is a deliberate cycle — safe
 // because these are only called from click handlers, never at module load.
@@ -251,8 +252,100 @@ export async function openModelExplorer() {
     onDelete: () => deleteEntry(section, name),
   });
 
+  /** Add one entry from a template. The forms cover what real models are
+   *  actually built from; "as JSON" is the way in for everything else. */
+  function addEntry(section) {
+    const forms = FORMS[section] || [];
+    const singular = section.replace(/s$/, "");
+    const nameBox = el("input", { type: "text", style: "width:100%",
+      placeholder: `name for the new ${singular}` });
+    const kindSel = el("select", {},
+      ...forms.map(f => el("option", { value: f.key }, f.label)),
+      el("option", { value: "__json__" }, "Write it as JSON myself"));
+    const fieldsEl = el("div", { class: "stack" });
+    const err = el("div", { class: "json-err hidden" });
+    // names already defined anywhere, offered as datalist suggestions so a
+    // reference to a parameter/recorder/node is picked, not retyped
+    const suggestions = {
+      table: Object.keys(tables), parameter: Object.keys(params),
+      recorder: Object.keys(recorders), node: nodes.map(n => n.name),
+    };
+    let inputs = {};
+
+    function renderFields() {
+      inputs = {};
+      const form = forms.find(f => f.key === kindSel.value);
+      if (!form) {
+        const box = el("textarea", { class: "json-edit", spellcheck: "false",
+          style: "min-height:32vh" });
+        box.value = "{\n  \"type\": \"\"\n}";
+        inputs.__json__ = box;
+        fieldsEl.replaceChildren(box);
+        return;
+      }
+      fieldsEl.replaceChildren(...form.fields.map(([key, label, hint, kind]) => {
+        const listId = suggestions[kind] ? `dl-${section}-${key}` : null;
+        const input = el("input", { type: "text", placeholder: hint,
+          style: "width:100%", ...(listId ? { list: listId } : {}) });
+        inputs[key] = { input, kind, label };
+        return el("label", { class: "stack small" }, label, input,
+          listId ? el("datalist", { id: listId },
+            ...suggestions[kind].map(v => el("option", { value: v }))) : null);
+      }));
+    }
+    kindSel.addEventListener("change", renderFields);
+    renderFields();
+
+    const go = async () => {
+      err.classList.add("hidden");
+      const fail = msg => { err.textContent = msg; err.classList.remove("hidden"); };
+      const name = nameBox.value.trim();
+      if (!name) return fail(`the ${singular} needs a name`);
+      let definition;
+      const form = forms.find(f => f.key === kindSel.value);
+      if (!form) {
+        try { definition = JSON.parse(inputs.__json__.value); }
+        catch (e) { return fail("Invalid JSON — " + e.message); }
+      } else {
+        const values = {};
+        for (const [key, { input, kind, label }] of Object.entries(inputs)) {
+          const text = input.value.trim();
+          if (!text) return fail(`“${label}” is empty`);
+          if (kind === "json") {
+            try { values[key] = JSON.parse(text); }
+            catch (e) { return fail(`“${label}”: invalid JSON — ${e.message}`); }
+          } else { values[key] = text; }
+        }
+        definition = form.build(values);
+      }
+      try {
+        const payload = await api("/api/definition/add",
+          { section, name, definition });
+        updateGraph(payload);
+        await reload();
+        showExplorer();
+        toast(`Added ${name} — Save to write it to the file`);
+      } catch (e) { fail(e.message); }
+    };
+
+    openModal(
+      el("h3", {}, `Add a ${singular}`),
+      el("label", { class: "stack small" }, "Name", nameBox),
+      el("label", { class: "stack small", style: "margin-top:8px" },
+        "What it does", kindSel),
+      el("div", { style: "margin-top:8px" }, fieldsEl),
+      err,
+      el("div", { class: "row gap", style: "margin-top:10px;justify-content:flex-end" },
+        el("button", { onclick: showExplorer }, "Cancel"),
+        el("button", { class: "primary", onclick: go }, "Add")));
+    $("modal").classList.add("explorer");
+    nameBox.focus();
+  }
+
   const sectionBar = (section, obj) =>
     el("div", { class: "row gap explorer-bar" },
+      el("button", { class: "tiny primary", onclick: () => addEntry(section) },
+        `+ add ${section.replace(/s$/, "")}`),
       el("button", { class: "tiny", onclick: () => editSection(section, obj) },
         `{ } edit all ${section}`),
       el("span", { class: "muted small" },
