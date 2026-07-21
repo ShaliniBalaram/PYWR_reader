@@ -269,5 +269,108 @@ class TestFrontendSmoke(unittest.TestCase):
         self.assertNoConsoleErrors()
 
 
+    # -- the live JSON dock ---------------------------------------------
+    def _open_dock(self, scope, node=None):
+        if node:
+            self.page.evaluate("n => selectNode(n)", arg=node)
+        self.page.evaluate("toggleDock(true)")
+        self.page.click(f"#dock-scopes button[data-scope='{scope}']")
+        self.page.wait_for_function(
+            "() => document.getElementById('dock-status').textContent"
+            " === 'in sync'")
+
+    def _dock_json(self):
+        return self.page.evaluate(
+            "() => JSON.parse(document.getElementById('dock-text').value)")
+
+    def _edit_dock(self, mutate_js):
+        """Rewrite the dock's JSON in the page and mark it edited, the way
+        typing would."""
+        self.page.evaluate("""fn => {
+          const box = document.getElementById('dock-text');
+          const doc = JSON.parse(box.value);
+          (new Function('doc', fn))(doc);
+          box.value = JSON.stringify(doc, null, 2);
+          box.dispatchEvent(new Event('input', {bubbles: true}));
+        }""", arg=mutate_js)
+
+    def test_dock_slice_holds_the_node_and_what_hangs_off_it(self):
+        self._open_dock("related", node="Demand_Urban")
+        doc = self._dock_json()
+        self.assertEqual(doc["node"]["name"], "Demand_Urban")
+        # the recorder watching this node, and no other node's recorder
+        self.assertIn("Urban_supply", doc["recorders"])
+        self.assertNotIn("Gauge_flow", doc["recorders"])
+        self.assertNoConsoleErrors()
+
+    def test_dock_follows_an_edit_made_on_the_canvas(self):
+        self._open_dock("related", node="Demand_Urban")
+        self.page.evaluate("""async () => {
+          await fetch('/api/node/update', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: 'Demand_Urban', changes: {cost: -321}}),
+          }).then(r => r.json()).then(updateGraph);
+        }""")
+        self.page.wait_for_function(
+            "() => JSON.parse(document.getElementById('dock-text').value)"
+            ".node.cost === -321")
+        self.assertEqual(self.page.inner_text("#dock-status"), "in sync")
+        self.assertNoConsoleErrors()
+
+    def test_dock_apply_updates_the_model_and_removing_an_entry_removes_it(self):
+        self._open_dock("related", node="Demand_Urban")
+        self._edit_dock("doc.node.cost = -55; delete doc.recorders.Urban_supply;")
+        self.page.click("#dock-apply")
+        self.page.wait_for_function(
+            "() => document.getElementById('dock-status').textContent"
+            " === 'in sync'")
+        node = next(n for n in app_module.WORKSPACE.model["nodes"]
+                    if n["name"] == "Demand_Urban")
+        self.assertEqual(node["cost"], -55)
+        # the one dropped from the slice is gone; its neighbours are not
+        self.assertNotIn("Urban_supply", app_module.WORKSPACE.model["recorders"])
+        self.assertIn("Gauge_flow", app_module.WORKSPACE.model["recorders"])
+        self.assertNoConsoleErrors()
+
+    def test_dock_rename_carries_every_reference(self):
+        self._open_dock("related", node="Demand_Urban")
+        self._edit_dock("doc.node.name = 'Demand_Town';")
+        self.page.click("#dock-apply")
+        self.page.wait_for_function(
+            "() => document.getElementById('dock-target').textContent"
+            " === 'Demand_Town'")
+        model = app_module.WORKSPACE.model
+        self.assertEqual(model["recorders"]["Urban_supply"]["node"], "Demand_Town")
+        self.assertTrue(any("Demand_Town" in e for e in model["edges"]))
+        self.assertFalse(any("Demand_Urban" in e for e in model["edges"]))
+        self.assertNoConsoleErrors()
+
+    def test_dock_keeps_your_typing_when_the_model_moves_under_it(self):
+        self._open_dock("related", node="Demand_Urban")
+        self._edit_dock("doc.node.cost = -999;")
+        self.page.evaluate("selectNode('Demand_Irrigation')")   # model view moved on
+        self.page.wait_for_selector("#dock-bar:not(.hidden)")
+        # the unapplied text is still there, still pointed at the old node
+        self.assertIn("-999", self.page.input_value("#dock-text"))
+        self.assertEqual(self.page.inner_text("#dock-target"), "Demand_Urban")
+        self.page.click("#dock-reload")
+        self.page.wait_for_function(
+            "() => document.getElementById('dock-target').textContent"
+            " === 'Demand_Irrigation'")
+        self.assertNotIn("-999", self.page.input_value("#dock-text"))
+        self.assertNoConsoleErrors()
+
+    def test_dock_reports_a_rejected_edit_and_keeps_your_text(self):
+        self._open_dock("model")
+        self._edit_dock("doc.edges[0][1] = 'NoSuchNode';")
+        self.page.click("#dock-apply")
+        self.page.wait_for_selector("#dock-err:not(.hidden)")
+        self.assertIn("NoSuchNode", self.page.inner_text("#dock-err"))
+        self.assertIn("NoSuchNode", self.page.input_value("#dock-text"))
+        self.assertEqual(len(app_module.WORKSPACE.model["nodes"]), 11)
+        # no assertNoConsoleErrors here: the rejected POST is a 400, and the
+        # browser logs every 400 as a console error. That 400 is the test.
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

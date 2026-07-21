@@ -68,7 +68,7 @@ the bootstrap needs is internet access the first time.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**132 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
+**138 tests**, using only Python's stdlib `unittest`. On a bare checkout all of
 them pass in under a second — the two groups that need an extra skip
 themselves rather than fail:
 
@@ -77,7 +77,7 @@ themselves rather than fail:
 | unit + API | just Flask | loaders, layout, graph ops, every route |
 | frontend contract | just Flask | that the JS modules still agree with `index.html` and the API blueprints — every `$("id")` looked up exists, every `/api/…` called is served |
 | pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording, reading h5/csv data |
-| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing |
+| browser smoke | `requirements-dev.txt` + chromium | the real UI in a headless browser: the network draws, path tracing, each layout, Undo, the Add menu, JSON editing, the live JSON dock both ways |
 | performance | just Flask | a 1,200-node model lays out, opens, and saves within a time budget — the guardrail that keeps real water models responsive |
 
 The frontend has no build step and no test framework, so the contract tests
@@ -174,6 +174,57 @@ remapped only for the run.
   `MonthlyProfile · table:GW PDO profile`) and expandable to full JSON. Click a
   node row to jump to it on the canvas.
 
+## The live JSON dock
+
+**{ } JSON** in the toolbar opens a JSON panel under the canvas that *stays*
+open while you work, and follows whatever you have selected. Click a node and
+its JSON is there; change something on the canvas and you watch the JSON change
+with it. It is the same model either way round — two views of one thing.
+
+Three scopes, switched at the top of the dock:
+
+| Scope | What you see |
+|---|---|
+| **node** | The selected node on its own. |
+| **node + related** | The node, **the parameters it uses** (following `Aggregated` → base × factor chains to the end), **the recorders watching it**, any parameter reading those recorders, and the tables they all read. |
+| **whole model** | Every section at once. |
+
+**node + related** is the one that answers "what is actually attached to this
+demand centre?". Select `DC_Boyneswood` in a real zone model and the dock shows
+its node JSON plus `DC_Boyneswood_max_flow` and the base/factor parameters
+behind it, the seven recorders on the node, the `EDO_threshold_param` reading
+one of them, and the zone totals it feeds — assembled by following references,
+not by matching names.
+
+References are followed **down** without limit and **up** by association only:
+a recorder that aggregates every demand centre is listed (this node feeds it),
+but the forty other demand centres it names are not pulled in with it.
+
+**Editing works both ways.** Change the JSON and press **Apply** (or
+**⌘/Ctrl+Enter**) — it goes through the same validation as every other JSON
+editor, and the canvas redraws. In **node + related**, *deleting an entry from
+the slice deletes it from the model*, so removing a recorder is one line of
+JSON. Renaming the node rewrites every reference to it, exactly as the node
+editor does.
+
+Apply is deliberately a button press, not live-as-you-type: half-typed JSON is
+invalid by definition and a canvas redrawing through those states is unusable.
+Your typing *is* checked live — the status reads **in sync**, **edited** or
+**invalid JSON**, and a syntax error names the line as you make it.
+
+**Nothing overwrites your typing.** If the model changes while you have
+unapplied edits — you moved to another node, or edited on the canvas — the dock
+keeps your text and says it has fallen behind, offering **Reload (discard my
+edits)** or **Keep editing**. Keep editing is safe: Apply merges onto the model
+as it is *then*, not as it was when the text was drawn, so a change made
+meanwhile is not silently undone.
+
+Drag the dock's top edge to resize it; **✕** hides it.
+
+> Renaming a **parameter or recorder** in the dock is not yet tracked the way a
+> node rename is — the old key is removed and the new one added, and anything
+> still pointing at the old name keeps pointing at it.
+
 ## Editing the JSON directly
 
 When the forms get in the way, edit the JSON itself — the explorer is editable
@@ -215,8 +266,10 @@ and your text stays put, so nothing is lost.
   edit/add/remove parameters (values are JSON — numbers or `{…}` parameter
   definitions), delete nodes/edges (with warnings if something still
   references them).
-- Prefer raw JSON? See [Editing the JSON directly](#editing-the-json-directly)
-  — the whole model, a whole `parameters` block, or one entry at a time.
+- Prefer raw JSON? See [the live JSON dock](#the-live-json-dock) for a panel
+  that stays open and follows your selection, or
+  [Editing the JSON directly](#editing-the-json-directly) for the modal
+  editors — the whole model, a whole `parameters` block, or one entry at a time.
 - **Export CSV pair** writes Graph-Overlay-compatible `nodes.csv` +
   `nodes_edges.csv`.
 
@@ -307,8 +360,9 @@ PYWR_reader/
 │   ├── app.js                    the network canvas, editing, runs + wiring
 │   ├── state / palette / dom / api.js   shared state, colours, DOM + API helpers
 │   ├── dataviewer.js             the h5/xlsx/csv table + plot modal
-│   └── explorer.js               Browse model + edit-as-JSON
-├── tests/                    132 unittest tests
+│   ├── explorer.js               Browse model + edit-as-JSON
+│   └── jsondock.js               the live JSON dock that follows the selection
+├── tests/                    138 unittest tests
 │   ├── test_pywr_reader.py       unit: loaders, layouts, graph ops
 │   ├── test_app_api.py           every route via Flask's test client
 │   ├── test_frontend_contract.py app.js vs index.html vs the API (no deps)
@@ -348,6 +402,9 @@ PYWR_reader/
 - [x] Export results — whole-run and per-node CSV; save a run beside the
       model and reopen it later
 - [x] Data file viewer — table or line-plot of the h5/xlsx/csv a model reads
+- [x] Live JSON dock — a JSON panel that stays open and follows the selection,
+      showing a node with the parameters, recorders and tables that hang off
+      it; edits flow both ways and unapplied typing is never overwritten
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file, for model suites that
       split the network and its parameters across separate files

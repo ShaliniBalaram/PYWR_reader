@@ -43,6 +43,7 @@
       </button>
     </div>
   </div>
+  <button id="btn-dock" title="Live JSON — a JSON view that follows what you select">{ } JSON</button>
   <span class="sep"></span>
   <button id="btn-run" class="primary" title="Run the model with pywr">▶ Run</button>
   <span id="env-chip" class="chip">checking…</span>
@@ -50,6 +51,7 @@
 </header>
 
 <main>
+  <div id="canvas-col">
   <div id="canvas-wrap">
     <svg id="canvas">
       <defs>
@@ -110,6 +112,30 @@
       <button id="btn-values" class="active"
               title="Show flow values along the selected node's path">123</button>
     </div>
+  </div>
+
+  <div id="jsondock" class="hidden">
+    <div id="dock-grip" title="Drag to resize"></div>
+    <div id="dock-head">
+      <span class="dock-label">JSON</span>
+      <div id="dock-scopes" class="row"></div>
+      <span id="dock-target" class="mono muted"></span>
+      <span class="spacer"></span>
+      <span id="dock-status" class="dock-status"></span>
+      <button id="dock-revert" class="tiny" title="Throw away unapplied edits">Revert</button>
+      <button id="dock-apply" class="tiny primary"
+              title="Update the model from this JSON (⌘/Ctrl+Enter)">Apply</button>
+      <button id="dock-close" class="tiny" title="Hide the JSON dock">✕</button>
+    </div>
+    <div id="dock-bar" class="hidden">
+      <span id="dock-bar-msg">The model changed while you were typing — this
+        JSON is behind. Apply merges onto the model as it is now.</span>
+      <button id="dock-reload" class="tiny">Reload (discard my edits)</button>
+      <button id="dock-keep" class="tiny">Keep editing</button>
+    </div>
+    <textarea id="dock-text" class="dock-text" spellcheck="false"></textarea>
+    <div id="dock-err" class="dock-err hidden"></div>
+  </div>
   </div>
 
   <aside id="sidebar">

@@ -9,6 +9,8 @@ import { $, el, svgEl, fmt, toast, openModal, closeModal } from "./dom.js";
 import { api } from "./api.js";
 import { dataViewer } from "./dataviewer.js";
 import { openModelExplorer } from "./explorer.js";
+import { initDock, toggleDock, dockModelChanged, dockSelectionChanged }
+  from "./jsondock.js";
 
 $("modal-backdrop").addEventListener("mousedown", e => {
   if (e.target === $("modal-backdrop")) closeModal();
@@ -169,6 +171,7 @@ export function selectNode(name) {
   refreshSelection();
   renderNodePanel();
   setTab("node");
+  dockSelectionChanged();
 }
 function selectEdge(idx) {
   const e = S.graph.edges[idx];
@@ -176,11 +179,13 @@ function selectEdge(idx) {
   refreshSelection();
   renderNodePanel();
   setTab("node");
+  dockSelectionChanged();
 }
 function deselect() {
   S.sel = null;
   refreshSelection();
   renderNodePanel();
+  dockSelectionChanged();
 }
 
 /* -------------------------------------------------- canvas interaction */
@@ -620,6 +625,7 @@ export function updateGraph(payload) {
   $("file-chip").textContent = payload.path
     ? payload.path.split("/").pop() + (payload.dirty ? " •" : "") : "";
   $("file-chip").title = payload.path || "";
+  dockModelChanged();          // the live JSON dock follows every model change
   return payload;
 }
 
@@ -1913,6 +1919,7 @@ window.addEventListener("resize", applyView);
   applyView();
   setMode("select");
   renderWhatIf();
+  initDock();
   await Promise.all([refreshGraph(), refreshEnv(), refreshRuns(), loadLayouts()]);
   loadBgForModel();   // restore a trace image saved for this model
   // wait for CSS layout to settle before measuring the canvas
@@ -1925,4 +1932,5 @@ window.addEventListener("resize", applyView);
 
 // Debug/test surface: the browser smoke tests call these by name via
 // page.evaluate, which runs in the page global scope (module scope is private).
-Object.assign(window, { S, selectNode, openModelExplorer, download });
+Object.assign(window, { S, selectNode, updateGraph, openModelExplorer, toggleDock,
+  download });
