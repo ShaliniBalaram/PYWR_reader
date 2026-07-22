@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -428,6 +429,37 @@ class TestApi(unittest.TestCase):
         self.assertIn("C:\\", labels)
         self.assertIn("D:\\", labels)
         self.assertNotIn("Volumes", labels)
+
+    def test_windows_drives_come_from_the_bitmask_not_by_probing(self):
+        # probing A:\ … Z:\ with isdir stalls on a disconnected network drive
+        # and spins up empty optical/card readers; Windows keeps a bitmask
+        fake = types.SimpleNamespace(windll=types.SimpleNamespace(
+            kernel32=types.SimpleNamespace(
+                GetLogicalDrives=lambda: (1 << 2) | (1 << 25))))  # C: and Z:
+        probed = []
+        with mock.patch.dict(sys.modules, {"ctypes": fake}), \
+             mock.patch.object(files.os.path, "isdir",
+                               side_effect=lambda p: probed.append(p) or True):
+            self.assertEqual(files.windows_drives(), ["C:\\", "Z:\\"])
+        self.assertEqual(probed, [], "drive letters were probed anyway")
+
+    def test_windows_drives_fall_back_to_probing_without_ctypes(self):
+        drives = {"C:\\", "E:\\"}
+        with mock.patch.dict(sys.modules, {"ctypes": None}), \
+             mock.patch.object(files.os.path, "isdir",
+                               side_effect=lambda p: p in drives):
+            self.assertEqual(files.windows_drives(), ["C:\\", "E:\\"])
+
+    def test_no_root_is_labelled_with_the_users_folder_name(self):
+        # the shortcuts are places ("Home", "C:\\", "Volumes"), never a path.
+        # A root labelled C:\Users\<name> would read as a drive called <name>.
+        with mock.patch.object(files.os.path, "expanduser",
+                               return_value=os.path.join("C:\\", "Users", "Ada")):
+            roots = files.browse_roots()
+        self.assertEqual(roots[0], {"label": "Home",
+                                    "path": os.path.join("C:\\", "Users", "Ada")})
+        for root in roots:
+            self.assertNotIn("Ada", root["label"], root)
 
     def test_browse_roots_on_mac_include_volumes(self):
         with mock.patch.object(files.os, "name", "posix"), \

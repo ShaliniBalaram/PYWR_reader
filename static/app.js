@@ -701,7 +701,11 @@ function openFileModal() {
 
   openModal(
     el("h3", {}, "Open model"),
-    el("div", { class: "row gap" }, rootsRow, crumbs),
+    // the crumb goes on its own line, not beside the shortcuts: inline it
+    // reads as another drive button — on Windows "Home" is C:\Users\<name>,
+    // so the row looked like Home / C:\ / D:\ / <your name>
+    rootsRow,
+    el("div", { class: "row gap browse-here" }, el("span", {}, "In"), crumbs),
     list,
     pathbox,
     el("div", { class: "row gap", style: "margin-top:10px; justify-content:flex-end" },
@@ -1188,7 +1192,9 @@ function pickDataDir() {
     el("h3", {}, "Add a folder to search for data files"),
     el("p", { class: "muted small" },
       "Pick the folder (or a parent of it) that contains the model’s .xlsx / .csv / .h5 data."),
-    el("div", { class: "row gap" }, rootsRow, crumbs), list,
+    rootsRow,
+    el("div", { class: "row gap browse-here" }, el("span", {}, "In"), crumbs),
+    list,
     el("div", { class: "row gap", style: "justify-content:flex-end;margin-top:10px" },
       el("button", { onclick: closeModal }, "Cancel"),
       el("button", { class: "primary", onclick: async () => {

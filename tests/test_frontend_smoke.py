@@ -223,6 +223,26 @@ class TestFrontendSmoke(unittest.TestCase):
             self.assertIn(label, shown)
         self.assertNoConsoleErrors()
 
+    def test_the_current_path_is_not_shown_among_the_shortcuts(self):
+        # it used to sit in the same row as the drive buttons, so on Windows
+        # (where Home is C:\Users\<name>) the row read as a drive called
+        # after the user. The path belongs on its own line.
+        self._open_dialog()
+        shortcut_row_text = self.page.evaluate("""() => {
+          const btn = document.querySelector('#modal .row.gap button');
+          return btn.parentElement.textContent;
+        }""")
+        home = self.page.evaluate(
+            "() => document.querySelector('#modal .mono.muted.small').textContent")
+        self.assertNotIn(home, shortcut_row_text,
+                         "the current path is rendered beside the shortcuts")
+        # and it is still on screen, labelled, just elsewhere (the label is
+        # uppercased by CSS, so compare case-insensitively)
+        here = self.page.inner_text(".browse-here")
+        self.assertIn("in", here.lower())
+        self.assertIn(home, here)
+        self.assertNoConsoleErrors()
+
     def test_open_dialog_navigates_using_the_server_path(self):
         self._open_dialog()
         crumb = self.CRUMB

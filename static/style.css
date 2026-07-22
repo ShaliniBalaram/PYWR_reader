@@ -459,6 +459,12 @@ table.grid td.mono { font-family: ui-monospace, Menlo, monospace; font-size: 11p
   white-space: pre-wrap; margin: 6px 0 2px; }
 .explorer-empty { color: var(--muted); padding: 16px; text-align: center; }
 
+/* "In <path>" under the drive shortcuts — its own line so the path is never
+   mistaken for another shortcut button */
+.browse-here { margin-top: 7px; min-width: 0; }
+.browse-here > span:first-child { color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.04em; flex: none; }
+.browse-here .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-list { border: 1px solid var(--grid); border-radius: 8px;
   max-height: 320px; overflow-y: auto; margin: 8px 0; }
 .browser-list .entry { padding: 5px 10px; cursor: pointer; display: flex; gap: 8px; }

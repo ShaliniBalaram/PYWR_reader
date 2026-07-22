@@ -22,6 +22,22 @@ def index():
 # ---------------------------------------------------------------------------
 # File browsing / open / save
 # ---------------------------------------------------------------------------
+def windows_drives():
+    """The drive letters that actually exist, from the bitmask Windows keeps
+    for exactly this. Probing A:\\ … Z:\\ with isdir() instead makes the Open
+    dialog stall: a disconnected network drive blocks until it times out, and
+    an empty card reader or optical drive gets spun up to answer. Falls back to
+    probing if the call is unavailable."""
+    try:
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+    except Exception:      # noqa: BLE001 — any ctypes/attribute failure
+        return [f"{c}:\\" for c in string.ascii_uppercase
+                if os.path.isdir(f"{c}:\\")]
+    return [f"{c}:\\" for i, c in enumerate(string.ascii_uppercase)
+            if mask >> i & 1]
+
+
 def browse_roots():
     """Shortcuts for the Open dialog, named for the platform you're on:
     the drives on Windows, /Volumes on macOS, the usual mount points on Linux.
@@ -29,10 +45,8 @@ def browse_roots():
     left Windows with no way to reach D: at all."""
     roots = [{"label": "Home", "path": os.path.expanduser("~")}]
     if os.name == "nt":
-        for letter in string.ascii_uppercase:
-            drive = f"{letter}:\\"
-            if os.path.isdir(drive):
-                roots.append({"label": drive, "path": drive})
+        roots.extend({"label": drive, "path": drive}
+                     for drive in windows_drives())
     else:
         for path, label in (("/Volumes", "Volumes"),      # macOS
                             ("/media", "Media"),          # Linux removable
