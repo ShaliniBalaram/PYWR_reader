@@ -353,6 +353,87 @@ function fitView() {
   applyView();
 }
 
+// Pan so a node sits in the middle of the canvas, keeping the current zoom —
+// used by the node search to jump to a hit without a jarring refit.
+function centerOnNode(name) {
+  const p = S.positions[name];
+  if (!p) return;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  // right after a model loads the canvas may not be laid out yet (width 0);
+  // wait a frame rather than guess the window size, which would centre on the
+  // window instead of the canvas and land the node off to the side
+  if (!w || !h) { requestAnimationFrame(() => centerOnNode(name)); return; }
+  S.view.x = w / 2 - p[0] * S.view.k;
+  S.view.y = h / 2 - p[1] * S.view.k;
+  applyView();
+}
+
+/* --------------------------------------------------- find a node (search) */
+const searchInput = $("node-search-input");
+const searchResults = $("node-search-results");
+let searchMatches = [], searchActive = -1;
+
+function runNodeSearch() {
+  const q = searchInput.value.trim().toLowerCase();
+  if (!q || !S.graph) { searchMatches = []; searchResults.classList.add("hidden"); return; }
+  // name matches first, then type matches — the name is what you usually want
+  const named = [], typed = [];
+  for (const n of S.graph.nodes) {
+    if (n.name.toLowerCase().includes(q)) named.push(n);
+    else if (String(n.type || "").toLowerCase().includes(q)) typed.push(n);
+  }
+  searchMatches = named.concat(typed).slice(0, 30);
+  searchActive = searchMatches.length ? 0 : -1;
+  renderSearchResults();
+}
+
+function renderSearchResults() {
+  if (!searchMatches.length) {
+    searchResults.replaceChildren(el("div", { class: "sr-empty" },
+      "No matching node"));
+  } else {
+    searchResults.replaceChildren(...searchMatches.map((n, i) =>
+      el("div", { class: "sr-item" + (i === searchActive ? " active" : ""),
+        // mousedown, not click: it fires before the input's blur hides this
+        onmousedown: e => { e.preventDefault(); pickSearch(i); } },
+        el("span", { class: "sr-name" }, n.name),
+        el("span", { class: "sr-type" }, String(n.type || "link")))));
+  }
+  searchResults.classList.remove("hidden");
+}
+
+function pickSearch(i) {
+  const n = searchMatches[i];
+  if (!n) return;
+  searchResults.classList.add("hidden");
+  searchInput.blur();
+  selectNode(n.name);      // highlights it and opens its panel
+  centerOnNode(n.name);    // brings it into view at the current zoom
+}
+
+searchInput.addEventListener("input", runNodeSearch);
+searchInput.addEventListener("focus", () => { if (searchInput.value) runNodeSearch(); });
+searchInput.addEventListener("blur", () =>
+  setTimeout(() => searchResults.classList.add("hidden"), 120));
+searchInput.addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    searchActive = Math.min(searchMatches.length - 1, searchActive + 1);
+    renderSearchResults();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    searchActive = Math.max(0, searchActive - 1);
+    renderSearchResults();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    pickSearch(searchActive);
+  } else if (e.key === "Escape") {
+    searchInput.value = "";
+    searchResults.classList.add("hidden");
+    searchInput.blur();
+  }
+});
+
 /* ------------------------------------------------------ trace image */
 // The image lives in world coordinates inside #viewport, so it pans and
 // zooms with the network. Unlocked, it can be dragged/resized; locked, it
@@ -2014,6 +2095,12 @@ typeSel.value = "link";
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" ||
       e.target.tagName === "SELECT") return;
+  if (e.key === "/") {           // jump to the node search, like many editors
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.select();
+    return;
+  }
   if (e.key === "Escape") {
     if (!$("modal-backdrop").classList.contains("hidden")) closeModal();
     else if (S.mode !== "select") setMode("select");

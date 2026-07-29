@@ -121,6 +121,19 @@ body {
   background: var(--page); border: 1px solid var(--grid); border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
 }
+/* find-a-node search (toolbar) */
+#node-search-input { width: 150px; }
+#node-search-results { max-height: 340px; overflow-y: auto; min-width: 230px; }
+#node-search-results .sr-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+}
+#node-search-results .sr-item.active,
+#node-search-results .sr-item:hover { background: var(--surface); }
+#node-search-results .sr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#node-search-results .sr-type { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+#node-search-results .sr-empty { padding: 8px; color: var(--muted); }
+
 .rec-list { gap: 0; }
 .rec-row { padding: 4px 0; border-bottom: 1px solid var(--grid); align-items: flex-start; }
 .rec-row:last-child { border-bottom: 0; }

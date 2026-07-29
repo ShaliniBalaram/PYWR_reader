@@ -161,6 +161,48 @@ class TestFrontendSmoke(unittest.TestCase):
         self.assertEqual(self.page.locator("#canvas .edge").count(), 10)
         self.assertNoConsoleErrors()
 
+    def test_find_a_node_by_name_and_jump_to_it(self):
+        # type into the toolbar search → matches; pick one → it's selected and
+        # centred (the panel opens on it). Pan away first to prove it re-centres.
+        self.page.fill("#node-search-input", "demand")
+        self.page.wait_for_selector("#node-search-results .sr-item")
+        names = self.page.evaluate(
+            "() => [...document.querySelectorAll('#node-search-results .sr-name')]"
+            ".map(e => e.textContent)")
+        self.assertIn("Demand_Urban", names)
+        self.assertIn("Demand_Irrigation", names)
+        self.page.evaluate("() => { S.view.x = -9000; S.view.y = -9000; }")
+        # mousedown fires before the input blur that would hide the list
+        self.page.eval_on_selector(
+            "#node-search-results .sr-item:has-text('Demand_Urban')",
+            "el => el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}))")
+        self.assertEqual(self.page.evaluate("() => S.sel && S.sel.name"),
+                         "Demand_Urban")
+        # it was panned far off-screen; picking centres it on the canvas
+        self.page.wait_for_function("""() => {
+          const p = S.positions['Demand_Urban'];
+          const c = document.getElementById('canvas');
+          if (!c.clientWidth) return false;          // not laid out yet
+          const sx = S.view.x + p[0] * S.view.k, sy = S.view.y + p[1] * S.view.k;
+          return Math.abs(sx - c.clientWidth / 2) < 2 &&
+                 Math.abs(sy - c.clientHeight / 2) < 2;
+        }""")
+        self.assertNoConsoleErrors()
+
+    def test_the_slash_key_focuses_the_node_search(self):
+        self.page.evaluate("() => document.body.focus()")
+        self.page.keyboard.press("/")
+        self.assertEqual(self.page.evaluate("() => document.activeElement.id"),
+                         "node-search-input")
+        self.assertNoConsoleErrors()
+
+    def test_node_search_reports_when_nothing_matches(self):
+        self.page.fill("#node-search-input", "zzz-no-such-node")
+        self.page.wait_for_selector("#node-search-results .sr-empty")
+        self.assertIn("No matching node",
+                      self.page.inner_text("#node-search-results"))
+        self.assertNoConsoleErrors()
+
     def test_the_side_panel_collapses_and_comes_back(self):
         panel = self.page.locator("#sidebar")
         self.assertTrue(panel.is_visible())
