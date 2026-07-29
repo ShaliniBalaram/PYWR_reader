@@ -14,6 +14,7 @@ import { initDock, toggleDock, dockModelChanged, dockSelectionChanged }
 import { recordersFor, recorderDef, suggestName as suggestRecorderName }
   from "./catalog.js";
 import { bundlesBlock } from "./bundles.js";
+import { isPdf, pdfFirstPageToPng } from "./pdfimport.js";
 
 $("modal-backdrop").addEventListener("mousedown", e => {
   if (e.target === $("modal-backdrop")) closeModal();
@@ -324,6 +325,7 @@ function setMode(mode) {
   add.textContent = (mode === "addnode" ? "+ Node"
                    : mode === "addedge" ? "+ Edge" : "+ Add") + " ▾";
   canvas.style.cursor = mode === "select" ? "default" : "crosshair";
+  updateBgInteractivity();   // let clicks reach the canvas when tracing
   hint();
 }
 
@@ -376,11 +378,7 @@ function renderBg() {
   bgHandleEl = svgEl("rect", { class: "bg-handle" });
   gBg.append(bgFrameEl, bgHandleEl);
 
-  if (bg.locked) {
-    bgImgEl.style.pointerEvents = "none";
-    bgFrameEl.style.display = "none";
-    bgHandleEl.style.display = "none";
-  } else {
+  if (!bg.locked) {
     bgImgEl.classList.add("bg-move");
     bgImgEl.addEventListener("mousedown", e => {
       e.stopPropagation();
@@ -393,8 +391,23 @@ function renderBg() {
                scale0: bg.scale, w0: bg.natW * bg.scale };
     });
   }
+  updateBgInteractivity();
   refreshBgHandle();
   renderTracePanel();
+}
+
+/** The image only grabs the mouse while you're positioning it — unlocked AND
+ *  in select mode. In +Node / +Edge mode it must be click-through so you can
+ *  trace on top of it; otherwise the click lands on the image (move/resize) or,
+ *  once locked, never reaches the add handler. This is what made "click to add
+ *  a node over the image" silently pan/move instead. */
+function updateBgInteractivity() {
+  if (!S.bg || !bgImgEl) return;
+  const interactive = !S.bg.locked && S.mode === "select";
+  bgImgEl.style.pointerEvents = interactive ? "" : "none";
+  const show = interactive ? "" : "none";
+  if (bgFrameEl) bgFrameEl.style.display = show;
+  if (bgHandleEl) bgHandleEl.style.display = show;
 }
 
 function refreshBgHandle() {
@@ -420,27 +433,39 @@ function updateBgGeometry() {
   refreshBgHandle();
 }
 
+// Place a raster (data URL + pixel size) as the trace background, centred in
+// the current view at ~70% of it. Shared by the image and PDF paths.
+function placeTraceImage(src, natW, natH, msg) {
+  const w = canvas.clientWidth || 900, h = canvas.clientHeight || 600;
+  const scale = (w / S.view.k * 0.7) / natW;
+  const cx = (w / 2 - S.view.x) / S.view.k;
+  const cy = (h / 2 - S.view.y) / S.view.k;
+  S.bg = { src, natW, natH, scale, opacity: 0.55, locked: false,
+           x: cx - natW * scale / 2, y: cy - natH * scale / 2 };
+  renderBg();
+  persistBg();
+  toast(msg);
+}
+
+const TRACE_HINT = "position it, then Lock (or +Node) and trace with + Node / + Edge";
+
 function loadTraceImage(file) {
+  // A PDF can't load into an <img>; its first page is rasterised to a PNG by
+  // the lazily-loaded pdf.js, then placed like any image (so save/sidecar,
+  // which want a real image, keep working — the .pdf itself is never stored).
+  if (isPdf(file)) {
+    toast("Rendering the PDF…");
+    pdfFirstPageToPng(file)
+      .then(({ dataUrl, width, height }) =>
+        placeTraceImage(dataUrl, width, height, "PDF loaded — " + TRACE_HINT))
+      .catch(err => toast("Could not render that PDF — " + err.message, true));
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     const img = new Image();
-    img.onload = () => {
-      // place the image centred in the current view, sized to ~70% of it
-      const w = canvas.clientWidth || 900, h = canvas.clientHeight || 600;
-      const worldW = w / S.view.k * 0.7;
-      const scale = worldW / img.naturalWidth;
-      const cx = (w / 2 - S.view.x) / S.view.k;
-      const cy = (h / 2 - S.view.y) / S.view.k;
-      S.bg = {
-        src: reader.result, natW: img.naturalWidth, natH: img.naturalHeight,
-        scale, opacity: 0.55, locked: false,
-        x: cx - img.naturalWidth * scale / 2,
-        y: cy - img.naturalHeight * scale / 2,
-      };
-      renderBg();
-      persistBg();
-      toast("Image loaded — position it, then Lock and trace with + Node / + Edge");
-    };
+    img.onload = () => placeTraceImage(reader.result, img.naturalWidth,
+      img.naturalHeight, "Image loaded — " + TRACE_HINT);
     img.onerror = () => toast("Could not read that image", true);
     img.src = reader.result;
   };

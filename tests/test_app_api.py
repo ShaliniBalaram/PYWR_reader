@@ -8,6 +8,7 @@ real routes. The example model under examples/ is used as a fixture.
 
 import json
 import os
+import pathlib
 import sys
 import tempfile
 import types
@@ -484,6 +485,23 @@ class TestApi(unittest.TestCase):
         r = self.c.get("/api/browse?path=" + EXAMPLE)
         self.assertEqual(r.status_code, 400)
         self.assertIn("not a directory", r.get_json()["error"])
+
+    def test_vendored_pdfjs_is_present_and_served(self):
+        # PDF trace backgrounds need pdf.js vendored locally (not a CDN) so the
+        # app stays offline. If either file goes missing, opening a PDF fails
+        # with a network error the user can't fix — catch that here.
+        for name in ("pdf.min.mjs", "pdf.worker.min.mjs"):
+            path = os.path.join(ROOT, "static", "vendor", "pdfjs", name)
+            self.assertTrue(os.path.isfile(path), f"missing vendored {name}")
+            r = self.c.get(f"/static/vendor/pdfjs/{name}")
+            self.assertEqual(r.status_code, 200, name)
+
+    def test_pdfimport_points_at_the_vendored_worker(self):
+        # the worker path is a bare string, so a moved file wouldn't fail a
+        # test unless we pin it: the module must name the file that exists
+        src = pathlib.Path(ROOT, "static", "pdfimport.js").read_text(
+            encoding="utf-8")
+        self.assertIn("/static/vendor/pdfjs/pdf.worker.min.mjs", src)
 
     def _raw(self):
         self._open_example()

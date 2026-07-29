@@ -208,16 +208,25 @@ there rather than in the app.
 
 ### Tracing a network from a map
 
-1. **New** (or open a model) → **Trace image** → pick a map, scan or screenshot.
-   It sits behind the network and pans and zooms with it.
+1. **New** (or open a model) → **Trace image** → pick a map, scan, screenshot,
+   or **PDF** schematic. A PDF's first page is rendered to an image for you. It
+   sits behind the network and pans and zooms with it.
 2. Drag to place, drag the corner to resize, set **Opacity**, or **Fit to view**.
-   **Lock** when the scale looks right.
+   **Lock** when the scale looks right — though you don't have to: switching to
+   **+ Node** or **+ Edge** lets clicks fall through to the canvas, so you can
+   trace whether or not the image is locked. (Locking just stops you nudging it
+   by accident while positioning.)
 3. **+ Node** on top of the map's features (tick **Quick place** to skip the
    name dialog), **+ Edge** along the flow lines.
 4. **Save** writes a normal pywr JSON — the image is never stored inside it. By
    default it's kept in the browser; **💾 Save beside model** writes it as
    `<model>.pywrtrace.png` plus a tiny sidecar holding its position, so the
-   trace travels with the project.
+   trace travels with the project. (A PDF is saved as the rendered `.png`; the
+   PDF itself is not stored.)
+
+> PDF rendering uses [PDF.js](https://mozilla.github.io/pdf.js/), vendored under
+> `static/vendor/pdfjs/` (Apache-2.0) and loaded only when you actually open a
+> PDF — so the app stays offline and dependency-free for everyone who doesn't.
 
 ---
 
@@ -339,7 +348,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**195 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**200 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -393,8 +402,10 @@ PYWR_reader/
 │   ├── explorer.js               Browse model, edit / rename / delete entries
 │   ├── jsondock.js               the live JSON dock that follows the selection
 │   ├── catalog.js                recorder / parameter / chain templates
-│   └── bundles.js                the "common set-ups" dialog with its live preview
-├── tests/                    195 unittest tests
+│   ├── bundles.js                the "common set-ups" dialog with its live preview
+│   ├── pdfimport.js              rasterise a PDF's first page for tracing
+│   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
+├── tests/                    200 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests
@@ -412,7 +423,7 @@ PYWR_reader/
 - [x] Flow explorer: path highlighting, flow-scaled edges, time slider,
       animation, per-node charts, what-if runs with comparison
 - [x] Verified on a real 80-year, 29,586-timestep zone model (162 nodes)
-- [x] Image tracing mode — trace a network over a map or schematic
+- [x] Image tracing mode — trace a network over a map, schematic or PDF
 - [x] Model explorer — filterable, readable browse of nodes/params/tables
 - [x] Scenario picker — choose and overlay ensemble members
 - [x] Per-edge exact flows at splits/junctions via spliced proxy links

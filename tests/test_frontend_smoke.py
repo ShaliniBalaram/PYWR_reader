@@ -28,6 +28,36 @@ from pywr_reader.api import files  # noqa: E402
 
 EXAMPLE = os.path.join(ROOT, "examples", "gw_network", "pywr_model.json")
 
+# a 1×1 png and a one-page pdf, built in-process so the tests carry no binaries
+_PNG_1x1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000d4944415478da63f8cfc0f01f0005000155a2b4e70000000049454e44ae426082")
+
+
+def _one_page_pdf():
+    """A minimal valid single-page PDF with a diagonal line, xref offsets
+    computed exactly so pdf.js parses it without falling back to recovery."""
+    objs = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 300]"
+        b"/Contents 4 0 R/Resources<<>>>>",
+        b"<</Length 34>>\nstream\n1 0 0 RG 5 w 40 40 m 360 260 l S\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer<</Size {len(objs) + 1}/Root 1 0 R>>\n"
+            f"startxref\n{xref}\n%%EOF").encode()
+    return bytes(out)
+
+
 try:
     from playwright.sync_api import sync_playwright
     HAVE_PLAYWRIGHT = True
@@ -255,6 +285,71 @@ class TestFrontendSmoke(unittest.TestCase):
         after = self.page.inner_text(crumb)
         self.assertTrue(after.startswith(before), f"{before} -> {after}")
         self.assertNotIn("//", after)
+        self.assertNoConsoleErrors()
+
+    # -- tracing over an image / PDF ------------------------------------
+    def _load_trace_file(self, name, data):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        # the input is hidden; set_input_files drives it directly and fires
+        # the change handler the button would
+        self.page.set_input_files("#trace-file", path)
+        self.page.wait_for_function("() => !!window.S.bg")
+
+    def test_the_trace_image_lets_clicks_through_only_while_tracing(self):
+        # the bug: an unlocked image swallowed the click, so "add a node over
+        # the image" moved the image (or, once locked, did nothing) instead of
+        # placing a node. It must be draggable while positioning (select mode)
+        # and click-through while tracing (+Node / +Edge).
+        self._load_trace_file("map.png", _PNG_1x1)
+        pe = lambda: self.page.evaluate(          # noqa: E731
+            "() => getComputedStyle(document.querySelector('#g-bg image'))"
+            ".pointerEvents")
+        # the mode buttons live in a closed menu, so drive them by id
+        mode = lambda m: self.page.evaluate(      # noqa: E731
+            "m => document.getElementById('btn-mode-' + m).click()", arg=m)
+        mode("select")
+        self.assertEqual(pe(), "auto", "not draggable while positioning")
+        mode("addnode")
+        self.assertEqual(pe(), "none", "swallows the click while tracing")
+        mode("select")
+        self.assertEqual(pe(), "auto", "not draggable again after tracing")
+        self.assertNoConsoleErrors()
+
+    def test_a_click_over_the_image_places_a_node(self):
+        # with the image loaded, a click in add-node mode reaches the canvas and
+        # places a node. (That the image doesn't intercept the click is pinned
+        # by the pointer-events test above; here we confirm the canvas handler
+        # still fires and places.)
+        self._load_trace_file("map.png", _PNG_1x1)
+        self.page.evaluate("() => { S.quickPlace = true; }")
+        self.page.evaluate(
+            "() => document.getElementById('btn-mode-addnode').click()")
+        before = self.page.evaluate("() => S.graph.nodes.length")
+        self.page.evaluate("""() => {
+          const c = document.getElementById('canvas');
+          const r = c.getBoundingClientRect();
+          c.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true, cancelable: true, button: 0,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2}));
+        }""")
+        self.page.wait_for_function("n => S.graph.nodes.length > n", arg=before)
+        self.assertNoConsoleErrors()
+
+    def test_a_pdf_becomes_a_raster_trace_background(self):
+        # a PDF can't load into an <img>; its first page is rasterised to a png
+        # by the vendored pdf.js so the rest of the trace machinery is unchanged
+        self._load_trace_file("schematic.pdf", _one_page_pdf())
+        bg = self.page.evaluate(
+            "() => ({w: S.bg.natW, h: S.bg.natH, png: "
+            "S.bg.src.startsWith('data:image/png')})")
+        self.assertTrue(bg["png"], "PDF page was not rasterised to a png")
+        self.assertGreater(bg["w"], 0)
+        self.assertGreater(bg["h"], 0)
+        # 400×300 page → aspect preserved
+        self.assertAlmostEqual(bg["w"] / bg["h"], 400 / 300, places=1)
         self.assertNoConsoleErrors()
 
     # -- JSON editing ---------------------------------------------------
