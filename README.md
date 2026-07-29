@@ -156,6 +156,10 @@ it `[estimated]` so an estimate is never mistaken for a recorded flow.
 
 ## Working with a model
 
+The Node / Runs / Model panel on the right collapses with the **›** button in
+its tab row, handing the whole width to the network; a **‹** handle at the
+top-right brings it back. The choice is remembered across reloads.
+
 ### Layout
 
 If a model has no positions — or junk ones (every node stacked on one
@@ -348,7 +352,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**200 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**202 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -405,7 +409,7 @@ PYWR_reader/
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    200 unittest tests
+├── tests/                    202 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests

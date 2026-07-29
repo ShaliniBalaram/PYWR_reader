@@ -161,6 +161,36 @@ class TestFrontendSmoke(unittest.TestCase):
         self.assertEqual(self.page.locator("#canvas .edge").count(), 10)
         self.assertNoConsoleErrors()
 
+    def test_the_side_panel_collapses_and_comes_back(self):
+        panel = self.page.locator("#sidebar")
+        self.assertTrue(panel.is_visible())
+        # collapse → panel gone, canvas wider, reopen handle shown
+        before = self.page.evaluate(
+            "() => document.getElementById('canvas').getBoundingClientRect().width")
+        self.page.click("#btn-sidebar-collapse")
+        self.page.wait_for_selector("#sidebar.collapsed", state="attached")
+        self.assertFalse(panel.is_visible())
+        self.assertTrue(self.page.locator("#sidebar-reopen").is_visible())
+        after = self.page.evaluate(
+            "() => document.getElementById('canvas').getBoundingClientRect().width")
+        self.assertGreater(after, before, "canvas did not reclaim the width")
+        # reopen → panel back, handle gone
+        self.page.click("#sidebar-reopen")
+        self.assertTrue(panel.is_visible())
+        self.assertFalse(self.page.locator("#sidebar-reopen").is_visible())
+        self.assertNoConsoleErrors()
+
+    def test_the_collapse_toggle_is_not_treated_as_a_tab(self):
+        # it lives in #tabs but has no data-tab; clicking it must not blank the
+        # active tab (that was the trap in wiring every #tabs button as a tab)
+        self.page.click("#btn-sidebar-collapse")
+        self.page.click("#sidebar-reopen")
+        active = self.page.evaluate(
+            "() => [...document.querySelectorAll('.tab')]"
+            ".filter(t => t.classList.contains('active')).length")
+        self.assertEqual(active, 1, "exactly one tab should stay active")
+        self.assertNoConsoleErrors()
+
     def test_clicking_a_node_opens_its_panel_and_traces_the_path(self):
         # Rainfall_Catchment leaves the groundwater branch off its path, so
         # the trace both highlights and dims. (Reservoir_A would not do: it

@@ -144,6 +144,8 @@
       <button data-tab="node" class="active">Node</button>
       <button data-tab="runs">Runs</button>
       <button data-tab="model">Model</button>
+      <button id="btn-sidebar-collapse" class="tab-collapse"
+              title="Hide this panel — more room for the network" aria-label="Hide panel">›</button>
     </nav>
     <section id="tab-node" class="tab active"></section>
     <section id="tab-runs" class="tab">
@@ -173,6 +175,8 @@
     </section>
     <section id="tab-model" class="tab"></section>
   </aside>
+  <button id="sidebar-reopen" class="hidden" title="Show the Node / Runs / Model panel"
+          aria-label="Show panel">‹</button>
 </main>
 
 <div id="modal-backdrop" class="hidden">

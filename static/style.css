@@ -248,7 +248,7 @@ button.tiny { padding: 1px 7px; font-size: 12px; border-radius: 5px;
         padding: 0 8px; font-size: 11px; }
 
 /* ---------- layout ---------- */
-main { flex: 1; display: flex; min-height: 0; }
+main { flex: 1; display: flex; min-height: 0; position: relative; }
 #canvas-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 #canvas-wrap { flex: 1; position: relative; background: var(--page); min-width: 0; min-height: 0; }
 #canvas { width: 100%; height: 100%; display: block; cursor: default; }
@@ -341,7 +341,18 @@ main { flex: 1; display: flex; min-height: 0; }
   border-left: 1px solid var(--border);
   display: flex; flex-direction: column; min-height: 0;
 }
+#sidebar.collapsed { display: none; }         /* hidden → canvas takes the width */
 #tabs { display: flex; border-bottom: 1px solid var(--border); }
+/* the ›/‹ collapse toggle: a fixed-width tab at the end of the row, and the
+   floating handle that brings the panel back */
+#tabs .tab-collapse { flex: none; width: 34px; font-size: 15px; }
+#sidebar-reopen {
+  position: absolute; top: 8px; right: 8px; z-index: 30;
+  width: 30px; height: 30px; padding: 0; font-size: 15px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--ink); cursor: pointer;
+}
+#sidebar-reopen:hover { border-color: var(--baseline); }
 #tabs button {
   flex: 1; background: none; border: none; border-radius: 0;
   padding: 9px 0; color: var(--muted); border-bottom: 2px solid transparent;

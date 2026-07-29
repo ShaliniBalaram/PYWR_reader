@@ -1855,13 +1855,26 @@ function envModal() {
 
 /* ------------------------------------------------------------- wiring */
 function setTab(name) {
-  document.querySelectorAll("#tabs button").forEach(b =>
+  document.querySelectorAll("#tabs button[data-tab]").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach(t =>
     t.classList.toggle("active", t.id === "tab-" + name));
 }
-document.querySelectorAll("#tabs button").forEach(b =>
+// [data-tab] so the collapse toggle (no data-tab) isn't treated as a tab
+document.querySelectorAll("#tabs button[data-tab]").forEach(b =>
   b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+// Collapse the side panel to hand its width to the network, and bring it back.
+// The choice is remembered across reloads.
+function setSidebarCollapsed(collapsed) {
+  $("sidebar").classList.toggle("collapsed", collapsed);
+  $("sidebar-reopen").classList.toggle("hidden", !collapsed);
+  try { localStorage.setItem("pywr_reader_sidebar", collapsed ? "1" : "0"); }
+  catch { /* private mode — fine, just won't be remembered */ }
+  requestAnimationFrame(applyView);   // the canvas just changed width
+}
+$("btn-sidebar-collapse").addEventListener("click", () => setSidebarCollapsed(true));
+$("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
 
 $("btn-open").addEventListener("click", openFileModal);
 $("btn-open2").addEventListener("click", openFileModal);
@@ -2023,6 +2036,8 @@ window.addEventListener("resize", applyView);
   setMode("select");
   renderWhatIf();
   initDock();
+  try { if (localStorage.getItem("pywr_reader_sidebar") === "1")
+    setSidebarCollapsed(true); } catch { /* ignore */ }
   await Promise.all([refreshGraph(), refreshEnv(), refreshRuns(), loadLayouts()]);
   loadBgForModel();   // restore a trace image saved for this model
   // wait for CSS layout to settle before measuring the canvas
