@@ -161,8 +161,11 @@ does.
 
 ### First run
 
-**Open** → `examples/gw_network/pywr_model.json` — a small runnable
-groundwater/river demo with daily data, included in the repository.
+Click **Try the example model** on the opening screen — a small runnable
+groundwater/river demo with daily data that ships with the app. (It's
+`examples/gw_network/pywr_model.json` in the repository; the packaged build
+unpacks a copy next to the executable the first time you use it, so you can
+edit and save it like any other model.)
 
 Reading, layout, path highlighting, editing, save, and CSV/`.tcm` import all
 work with nothing installed but Flask. Everything else in the codebase is the
@@ -423,7 +426,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**222 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**226 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -483,7 +486,7 @@ PYWR_reader/
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    222 unittest tests
+├── tests/                    226 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests

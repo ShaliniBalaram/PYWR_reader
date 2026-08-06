@@ -203,6 +203,23 @@ class TestFrontendSmoke(unittest.TestCase):
                       self.page.inner_text("#node-search-results"))
         self.assertNoConsoleErrors()
 
+    def test_the_empty_state_offers_the_example_and_opens_it(self):
+        # with no model open, the demo is one click away — the packaged build
+        # unpacks it somewhere nobody could browse to, so a button is the
+        # only way anyone finds it
+        app_module.WORKSPACE.reset()
+        page = self.browser.new_page(viewport={"width": 1280, "height": 800})
+        try:
+            page.goto(self.base)
+            page.wait_for_selector("#btn-example:not(.hidden)")
+            self.assertTrue(page.locator("#empty-state").is_visible())
+            page.click("#btn-example")
+            page.wait_for_selector("#canvas .node")
+            self.assertEqual(page.locator("#canvas .node").count(), 11)
+            self.assertFalse(page.locator("#empty-state").is_visible())
+        finally:
+            page.close()
+
     def test_the_side_panel_collapses_and_comes_back(self):
         panel = self.page.locator("#sidebar")
         self.assertTrue(panel.is_visible())

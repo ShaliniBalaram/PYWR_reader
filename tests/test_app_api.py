@@ -769,6 +769,50 @@ class TestLaunchers(unittest.TestCase):
                                                   timeout=0.3))
 
 
+class TestExampleModel(unittest.TestCase):
+    """The empty state offers the bundled demo, because a packaged build
+    unpacks it where nobody could browse to it."""
+
+    def setUp(self):
+        app_module.app.testing = True
+        self.c = app_module.app.test_client()
+
+    def test_the_example_is_reported_and_openable(self):
+        path = self.c.get("/api/example").get_json()["path"]
+        self.assertTrue(os.path.isfile(path), path)
+        opened = self.c.post("/api/open", json={"path": path}).get_json()
+        self.assertEqual(len(opened["nodes"]), 11)
+        # its data file has to come along, or the demo can't be run
+        self.assertEqual(opened["data"]["missing"], [])
+
+    def test_a_packaged_build_copies_the_example_somewhere_it_survives(self):
+        # bundled data lives in a temp folder that is deleted on exit; opening
+        # the example from there and saving would lose the work
+        with tempfile.TemporaryDirectory() as bundle, \
+             tempfile.TemporaryDirectory() as beside:
+            demo = os.path.join(bundle, "examples", "gw_network")
+            os.makedirs(demo)
+            for name in ("pywr_model.json", "params.csv", "._pywr_model.json"):
+                pathlib.Path(demo, name).write_text("x", encoding="utf-8")
+            exe = os.path.join(beside, "PyWR Reader")
+            with mock.patch.object(files, "APP_DIR", bundle), \
+                 mock.patch.object(files.sys, "frozen", True, create=True), \
+                 mock.patch.object(files.sys, "executable", exe):
+                got = files.example_path()
+            self.assertEqual(got, os.path.join(beside, "examples", "gw_network",
+                                               "pywr_model.json"))
+            self.assertTrue(os.path.isfile(got), "not copied out of the bundle")
+            copied = os.listdir(os.path.dirname(got))
+            self.assertIn("params.csv", copied)     # the model reads it
+            self.assertNotIn("._pywr_model.json", copied)   # macOS junk
+
+    def test_no_example_reports_none_rather_than_a_bad_path(self):
+        with tempfile.TemporaryDirectory() as empty, \
+             mock.patch.object(files, "APP_DIR", empty):
+            self.assertIsNone(files.example_path())
+            self.assertIsNone(self.c.get("/api/example").get_json()["path"])
+
+
 class TestPackagedBuild(unittest.TestCase):
     """build_exe.py packages the app so it runs without Python installed."""
 

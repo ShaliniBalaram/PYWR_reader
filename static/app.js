@@ -1959,6 +1959,25 @@ $("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
 
 $("btn-open").addEventListener("click", openFileModal);
 $("btn-open2").addEventListener("click", openFileModal);
+
+/* The demo model ships with the app, but a packaged build unpacks it where
+   nobody could browse to it — so the empty state offers it as a button, and
+   only when the server says it is actually there. */
+$("btn-example").addEventListener("click", async () => {
+  try {
+    const { path } = await api("/api/example");
+    if (!path) return toast("The example model isn't bundled with this build", true);
+    updateGraph(await api("/api/open", { path }));
+    requestAnimationFrame(() => requestAnimationFrame(fitView));
+    toast("Example model opened — click a node to trace its water path");
+  } catch (err) { toast(err.message, true); }
+});
+async function offerExample() {
+  try {
+    const { path } = await api("/api/example");
+    $("btn-example").classList.toggle("hidden", !path);
+  } catch { /* no example, leave the button hidden */ }
+}
 $("btn-new").addEventListener("click", newModelModal);
 
 /* ---- trace image wiring ---- */
@@ -2125,7 +2144,8 @@ window.addEventListener("resize", applyView);
   initDock();
   try { if (localStorage.getItem("pywr_reader_sidebar") === "1")
     setSidebarCollapsed(true); } catch { /* ignore */ }
-  await Promise.all([refreshGraph(), refreshEnv(), refreshRuns(), loadLayouts()]);
+  await Promise.all([refreshGraph(), refreshEnv(), refreshRuns(), loadLayouts(),
+                     offerExample()]);
   loadBgForModel();   // restore a trace image saved for this model
   // wait for CSS layout to settle before measuring the canvas
   if (S.graph) requestAnimationFrame(() => requestAnimationFrame(fitView));

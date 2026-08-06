@@ -2,7 +2,9 @@
 
 import json
 import os
+import shutil
 import string
+import sys
 
 from flask import Blueprint, jsonify, request, send_from_directory
 
@@ -89,6 +91,49 @@ def browse():
                     # say so, rather than offer a ".." that goes nowhere
                     "parent": parent if parent != path else None,
                     "entries": entries, "roots": browse_roots()})
+
+
+EXAMPLE_PARTS = ("examples", "gw_network")
+
+
+def example_path():
+    """The bundled demo model, as a file the user can actually keep.
+
+    From source that is simply the copy in the repository. A packaged build
+    unpacks it into a temporary folder that is deleted when the app exits, so
+    it is copied out next to the executable first — otherwise opening the
+    example and saving would write into that temp folder, and the work would
+    be gone by the next launch.
+
+    Returns None when the example isn't there at all."""
+    bundled = os.path.join(APP_DIR, *EXAMPLE_PARTS, "pywr_model.json")
+    if not os.path.isfile(bundled):
+        return None
+    if not getattr(sys, "frozen", False):
+        return bundled
+
+    beside_exe = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                              *EXAMPLE_PARTS)
+    target = os.path.join(beside_exe, "pywr_model.json")
+    if not os.path.isfile(target):
+        try:
+            # the whole folder: the model reads params.csv beside itself.
+            # "._*" are macOS resource forks that ride along from a non-native
+            # filesystem — junk everywhere else in this app, junk here too.
+            shutil.copytree(os.path.dirname(bundled), beside_exe,
+                            dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("._*", ".DS_Store"))
+        except OSError:
+            return bundled       # read-only spot — better than no example
+    return target
+
+
+@bp.get("/api/example")
+def example_model():
+    """Where the demo model is. The packaged build unpacks it somewhere the
+    browser could never guess, so it has to ask."""
+    path = example_path()
+    return jsonify({"ok": True, "path": path})
 
 
 @bp.post("/api/open")
