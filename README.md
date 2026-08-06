@@ -437,6 +437,7 @@ PYWR_reader/
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests
+├── .venv/                    the app's own environment (created on first run)
 └── .pywr-env/                private pywr environment (created on demand)
 ```
 
