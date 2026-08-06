@@ -11,8 +11,13 @@ mutates it.
 """
 
 import os
+import socket
 import subprocess
 import sys
+import threading
+import time
+import urllib.request
+import webbrowser
 
 MIN_PYTHON = (3, 9)
 # The project root. Computed here rather than imported from pywr_reader.api,
@@ -131,7 +136,55 @@ app.json.sort_keys = False  # keep pywr model key order in API responses
 register_blueprints(app)
 
 
+def port_in_use(port, host="127.0.0.1", timeout=0.4):
+    """Is something already listening there?"""
+    with socket.socket() as probe:
+        probe.settimeout(timeout)
+        return probe.connect_ex((host, port)) == 0
+
+
+def is_pywr_reader(url, timeout=1.5):
+    """Does that address answer with this app's page? Separates "already
+    running" from "that port belongs to something else", so the message can say
+    which without guessing."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return b"PyWR Reader" in response.read(4096)
+    except OSError:
+        return False
+
+
+def open_when_ready(url, port, tries=100, delay=0.1):
+    """Open the browser once the server answers. Waiting matters: opening it
+    immediately lands on a connection-refused page, which looks like a broken
+    app to anyone who started it by double-clicking."""
+    for _ in range(tries):
+        if port_in_use(port):
+            break
+        time.sleep(delay)
+    webbrowser.open(url)
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PYWR_READER_PORT", "5321"))
-    print(f"PyWR Reader → http://127.0.0.1:{port}")
+    url = f"http://127.0.0.1:{port}"
+    # the launchers pass --open; a bare `python app.py` stays quiet as before
+    want_browser = "--open" in sys.argv or bool(os.environ.get("PYWR_READER_OPEN"))
+
+    if port_in_use(port):
+        # double-clicking the launcher twice shouldn't be a traceback
+        if is_pywr_reader(url):
+            print(f"PyWR Reader is already running → {url}")
+            if want_browser:
+                webbrowser.open(url)
+            raise SystemExit(0)
+        _die(f"Port {port} is in use by something that isn't PyWR Reader.", "",
+             "Close whatever is using it, or run on a different port:",
+             "  set PYWR_READER_PORT=5322 && py app.py" if os.name == "nt"
+             else "  PYWR_READER_PORT=5322 python3 app.py")
+
+    if want_browser:
+        threading.Thread(target=open_when_ready, args=(url, port),
+                         daemon=True).start()
+    print(f"PyWR Reader → {url}")
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

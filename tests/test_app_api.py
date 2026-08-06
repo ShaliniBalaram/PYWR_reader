@@ -9,6 +9,8 @@ real routes. The example model under examples/ is used as a fixture.
 import json
 import os
 import pathlib
+import socket
+import subprocess
 import sys
 import tempfile
 import types
@@ -711,6 +713,60 @@ class TestBootstrap(unittest.TestCase):
         major, minor = app_module.MIN_PYTHON
         self.assertIn(f"Python-{major}.{minor}+", readme)
         self.assertIn(f"Python {major}.{minor} or newer", readme)
+
+
+class TestLaunchers(unittest.TestCase):
+    """The double-click launchers, and the start-up checks behind them."""
+
+    MAC = "Start PyWR Reader.command"
+    WIN = "Start PyWR Reader.bat"
+
+    def test_both_launchers_exist_and_start_the_app_with_a_browser(self):
+        for name in (self.MAC, self.WIN):
+            path = pathlib.Path(ROOT, name)
+            self.assertTrue(path.is_file(), f"missing {name}")
+            self.assertIn("app.py --open", path.read_text(encoding="utf-8"),
+                          f"{name} does not start the app with --open")
+
+    def test_the_mac_launcher_is_executable_in_the_repository(self):
+        # a .command without the exec bit does nothing when double-clicked, and
+        # this repo has core.fileMode=false, so chmod alone is not recorded —
+        # the mode has to be right in git's index
+        out = subprocess.run(["git", "ls-files", "-s", self.MAC],
+                             cwd=ROOT, capture_output=True, text=True).stdout
+        self.assertTrue(out.startswith("100755"),
+                        f"{self.MAC} is not executable in git: {out.strip()!r}")
+
+    def test_the_launcher_changes_into_its_own_folder(self):
+        # double-clicked, the working directory is wherever the user was
+        self.assertIn('cd "$(dirname "$0")"',
+                      pathlib.Path(ROOT, self.MAC).read_text(encoding="utf-8"))
+        self.assertIn('cd /d "%~dp0"',
+                      pathlib.Path(ROOT, self.WIN).read_text(encoding="utf-8"))
+
+    def test_port_in_use_sees_a_listening_socket(self):
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            self.assertTrue(app_module.port_in_use(port))
+        self.assertFalse(app_module.port_in_use(port))   # closed again
+
+    def test_open_when_ready_waits_for_the_server_then_opens(self):
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            with mock.patch.object(app_module.webbrowser, "open") as opened:
+                app_module.open_when_ready("http://here", port, tries=1, delay=0)
+        opened.assert_called_once_with("http://here")
+
+    def test_is_pywr_reader_is_false_when_nothing_answers(self):
+        with socket.socket() as probe:      # grab then release a free port
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        self.assertFalse(app_module.is_pywr_reader(f"http://127.0.0.1:{port}",
+                                                  timeout=0.3))
 
 
 class TestDefinitionApi(unittest.TestCase):

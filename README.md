@@ -38,6 +38,25 @@ Verified on a real 80-year, 29,586-timestep zone model of 162 nodes.
 You need **Python 3.9 or newer**. Nothing else — the app installs its one
 dependency itself.
 
+### Double-click it
+
+In the `PYWR_reader` folder:
+
+| | Double-click |
+|---|---|
+| **macOS** | **Start PyWR Reader.command** |
+| **Windows** | **Start PyWR Reader.bat** |
+
+It starts the app **and opens your browser at it**. Keep the little terminal
+window it opens — closing it (or Ctrl+C) stops the app. On macOS you can drag
+the `.command` to your Dock to keep it handy.
+
+> First time on macOS, Gatekeeper may say the file is from an unidentified
+> developer: **right-click → Open**, then **Open** once. After that,
+> double-clicking works normally.
+
+### Or from a terminal
+
 **macOS / Linux**
 
 ```bash
@@ -52,7 +71,8 @@ cd PYWR_reader
 py app.py
 ```
 
-Then open **<http://127.0.0.1:5321>**.
+Then open **<http://127.0.0.1:5321>**. (Add `--open` to have it open the browser
+for you, as the launchers do.)
 
 The first run prints *creating a private environment* and *installing Flask*,
 builds a `.venv` folder beside the app, and starts. That takes a few seconds and
@@ -355,7 +375,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**210 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**216 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -385,6 +405,7 @@ the culprit. To enable the browser tests:
 
 ```
 PYWR_reader/
+├── Start PyWR Reader.command / .bat   double-click launchers (macOS / Windows)
 ├── app.py                    thin entry point — builds Flask, registers blueprints
 ├── pywr_reader/
 │   ├── session.py            Workspace + RunStore — the open model and its runs
@@ -412,7 +433,7 @@ PYWR_reader/
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    210 unittest tests
+├── tests/                    216 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests
