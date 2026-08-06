@@ -423,7 +423,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**221 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**222 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -483,7 +483,7 @@ PYWR_reader/
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    221 unittest tests
+├── tests/                    222 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests

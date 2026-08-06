@@ -65,7 +65,7 @@ def main():
         cmd += ["--add-data", f"{os.path.join(HERE, src)}{separator}{dest}"]
     cmd.append(os.path.join(HERE, "app.py"))
 
-    print("Building — this takes a minute…", flush=True)
+    print("Building -- this takes a minute...", flush=True)
     if subprocess.run(cmd, cwd=HERE).returncode != 0:
         return 1
 
@@ -75,7 +75,7 @@ def main():
         return 1
     size_mb = os.path.getsize(built) / (1024 * 1024)
     print(f"\nBuilt {built}  ({size_mb:.0f} MB)")
-    print("Double-click it, or run it from a terminal. Nothing else needed —\n"
+    print("Double-click it, or run it from a terminal. Nothing else needed --\n"
           "it carries its own Python and Flask.")
     shutil.rmtree(os.path.join(HERE, "build"), ignore_errors=True)
     return 0

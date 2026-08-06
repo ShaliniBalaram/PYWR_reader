@@ -817,6 +817,30 @@ class TestPackagedBuild(unittest.TestCase):
         self.assertIn("build_exe.py", text)
         self.assertIn("--no-open", text)   # or the runner waits on a browser
 
+    def test_console_output_survives_an_old_windows_code_page(self):
+        """Windows consoles are usually cp1252 or cp437, not UTF-8. A "→" in a
+        status line raised UnicodeEncodeError and killed the packaged app on
+        startup — before it printed anything explaining why. Keep every string
+        we print encodable on the narrowest of those."""
+        import ast
+        offenders = []
+        for name in ("app.py", "build_exe.py"):
+            tree = ast.parse(pathlib.Path(ROOT, name).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id in ("print", "_die")):
+                    continue
+                for piece in ast.walk(node):    # covers f-string fragments too
+                    if isinstance(piece, ast.Constant) and \
+                            isinstance(piece.value, str):
+                        try:
+                            piece.value.encode("cp437")
+                        except UnicodeEncodeError:
+                            offenders.append(f"{name}: {piece.value.strip()[:60]!r}")
+        self.assertEqual(offenders, [],
+                         "these printed strings would crash a Windows console")
+
     def test_app_dir_follows_the_bundle_when_frozen(self):
         # PyInstaller unpacks bundled data to _MEIPASS; static/ has to be found
         # there, not next to a source file that isn't shipped

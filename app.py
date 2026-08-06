@@ -10,6 +10,7 @@ live in a single session object (pywr_reader/session); each blueprint reads and
 mutates it.
 """
 
+import contextlib
 import os
 import socket
 import subprocess
@@ -26,6 +27,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 VENV_DIR = os.path.join(_HERE, ".venv")
 # Set on the hand-over, so a bootstrap that didn't work cannot re-exec forever.
 BOOTSTRAP_ENV = "PYWR_READER_BOOTSTRAPPED"
+
+
+# Windows consoles are cp1252 or cp437 far more often than UTF-8, and neither
+# can encode an arrow. Printing one killed the packaged app on startup, so the
+# messages below are ASCII — and this makes any future slip degrade to "?"
+# instead of taking the app down with a UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    with contextlib.suppress(AttributeError, ValueError):   # not a text stream
+        _stream.reconfigure(errors="replace")
 
 
 def _die(*lines):
@@ -90,7 +100,7 @@ def bootstrap():
     python = venv_python()
     if not os.path.isfile(python):
         print(f"PyWR Reader: creating a private environment in {VENV_DIR} "
-              "(one time)…", flush=True)
+              "(one time)...", flush=True)
         try:
             subprocess.run([sys.executable, "-m", "venv", VENV_DIR], check=True)
         except (subprocess.CalledProcessError, OSError) as exc:
@@ -100,7 +110,7 @@ def bootstrap():
                  "Or set it up by hand:", *manual_steps())
 
     if not has_flask(python):
-        print("PyWR Reader: installing Flask (needs internet, one time)…",
+        print("PyWR Reader: installing Flask (needs internet, one time)...",
               flush=True)
         try:
             subprocess.run([python, "-m", "pip", "install", "--quiet",
@@ -121,7 +131,7 @@ def bootstrap():
 
 
 if sys.version_info < MIN_PYTHON:
-    _die(f"PyWR Reader needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer — "
+    _die(f"PyWR Reader needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer -- "
          f"this is Python {sys.version.split()[0]}.", "",
          "Install a newer one from https://www.python.org/downloads/ and run "
          "this again.")
@@ -198,7 +208,7 @@ if __name__ == "__main__":
     if port_in_use(port):
         # double-clicking the launcher twice shouldn't be a traceback
         if is_pywr_reader(url):
-            print(f"PyWR Reader is already running → {url}")
+            print(f"PyWR Reader is already running -> {url}")
             if want_browser:
                 webbrowser.open(url)
             raise SystemExit(0)
@@ -210,5 +220,5 @@ if __name__ == "__main__":
     if want_browser:
         threading.Thread(target=open_when_ready, args=(url, port),
                          daemon=True).start()
-    print(f"PyWR Reader → {url}")
+    print(f"PyWR Reader -> {url}")
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
