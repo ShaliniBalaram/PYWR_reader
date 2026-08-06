@@ -59,17 +59,25 @@ jobs:
       - name: Smoke-test the binary
         shell: bash
         run: |
-          "${{ matrix.binary }}" --no-open &
+          # keep the binary's own output — without it a failure here says only
+          # "could not connect", which is the symptom and never the reason
+          "${{ matrix.binary }}" --no-open > server.log 2>&1 &
           pid=$!
           for i in $(seq 1 45); do
-            if curl -fsS -o /dev/null http://127.0.0.1:5321/; then
+            if curl -fsS -o /dev/null "http://127.0.0.1:5321/"; then
               echo "started and served the page"
               kill $pid 2>/dev/null || true
               exit 0
             fi
+            if ! kill -0 $pid 2>/dev/null; then
+              echo "the binary exited on its own; its output was:"
+              cat server.log
+              exit 1
+            fi
             sleep 2
           done
-          echo "the binary never served a page"
+          echo "the binary never served a page; its output was:"
+          cat server.log
           kill $pid 2>/dev/null || true
           exit 1
 
