@@ -87,8 +87,64 @@ jobs:
           path: ${{ matrix.binary }}
           if-no-files-found: error
 
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  # One job publishes, after both builds pass. Letting each build attach its
+  # own file means two jobs racing to create the same release, and a release
+  # is the one thing here that is public and awkward to take back.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: ${{ matrix.binary }}
+          path: artifacts
+
+      # "PyWR Reader.exe" becomes "PyWR.Reader.exe" as an asset name, and says
+      # nothing about which machine it is for. Name them for the download list.
+      - name: Name the downloads by platform
+        run: |
+          mkdir -p out
+          cp "artifacts/PyWR-Reader-Windows/PyWR Reader.exe" \
+             "out/PyWR-Reader-${{ github.ref_name }}-Windows.exe"
+          cp "artifacts/PyWR-Reader-macOS/PyWR Reader" \
+             "out/PyWR-Reader-${{ github.ref_name }}-macOS"
+          ls -lh out
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: PyWR Reader ${{ github.ref_name }}
+          files: out/*
+          fail_on_unmatched_files: true
+          body: |
+            Open a PyWR water resource model and actually see it — the network
+            draws itself, clicking a node lights up where its water comes from
+            and goes to, and one button runs the model and plays the flows back
+            through every pipe.
+
+            ## Download and run — no Python needed
+
+            | Your machine | Download | Then |
+            |---|---|---|
+            | **Windows** | `PyWR-Reader-${{ github.ref_name }}-Windows.exe` | Double-click it |
+            | **macOS** | `PyWR-Reader-${{ github.ref_name }}-macOS` | Right-click → **Open**, then **Open** |
+
+            It carries its own Python and Flask, starts, and opens your browser.
+            No pip, no admin rights. The first launch takes a few seconds longer
+            while it unpacks itself.
+
+            Neither build is code-signed, so both systems warn about an
+            unidentified developer the first time: on macOS use right-click →
+            Open, on Windows **More info → Run anyway**.
+
+            To *run* models (rather than read and edit them) it sets up pywr on
+            demand into a `.pywr-env` folder **next to the executable** — so keep
+            the executable somewhere writable, like your Desktop.
+
+            ## Or run it from source
+
+            Python 3.9+, then `python3 app.py` (Windows: `py app.py`). It
+            installs its one dependency itself on first run. There are
+            double-click launchers in the folder too.
+
+            See the [README](https://github.com/ShaliniBalaram/PYWR_reader#readme)
+            for everything it does.
