@@ -21,7 +21,30 @@ import subprocess
 import sys
 import threading
 
-PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _project_dir():
+    """Where the environments live. Normally the project folder; in a packaged
+    build, the folder holding the executable — the bundle's own directory is a
+    temporary one that is deleted on exit, so anything installed there would
+    have to be downloaded again on every launch."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def host_python():
+    """A real interpreter to build environments with.
+
+    sys.executable is the app itself once packaged, and handing that to
+    `-m venv` would just relaunch the app. Fall back to whatever Python is on
+    PATH; None means the interpreter-based attempts have to be skipped, and
+    micromamba — which brings its own Python — is the way in."""
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    return shutil.which("python3") or shutil.which("python")
+
+
+PROJECT_DIR = _project_dir()
 ENV_DIR = os.path.join(PROJECT_DIR, ".pywr-env")
 BOOT_DIR = os.path.join(PROJECT_DIR, ".uv-bootstrap")
 MAMBA_DIR = os.path.join(PROJECT_DIR, ".micromamba")
@@ -84,10 +107,14 @@ def _run_logged(fh, cmd, **kw):
 
 
 def _attempt_current_python(fh):
+    host = host_python()
+    if host is None:
+        _log(fh, "== Attempt 1 skipped: no Python on PATH (packaged build) ==")
+        return False
     _log(fh, f"== Attempt 1: venv on current Python "
              f"({sys.version.split()[0]}) ==")
     shutil.rmtree(ENV_DIR, ignore_errors=True)
-    if _run_logged(fh, [sys.executable, "-m", "venv", ENV_DIR]) != 0:
+    if _run_logged(fh, [host, "-m", "venv", ENV_DIR]) != 0:
         return False
     python = env_python()
     if _run_logged(fh, [python, "-m", "pip", "install", "--upgrade", "pip"]) != 0:
@@ -104,8 +131,12 @@ def _attempt_uv(fh, python_version="3.11"):
                                os.path.join(BOOT_DIR, "Scripts", "uv.exe"))
                    if os.path.isfile(p)), None))
     if uv is None:
+        host = host_python()
+        if host is None:
+            _log(fh, "no Python on PATH to bootstrap uv with (packaged build)")
+            return False
         shutil.rmtree(BOOT_DIR, ignore_errors=True)
-        if _run_logged(fh, [sys.executable, "-m", "venv", BOOT_DIR]) != 0:
+        if _run_logged(fh, [host, "-m", "venv", BOOT_DIR]) != 0:
             return False
         boot_python = (os.path.join(BOOT_DIR, "bin", "python")
                        if os.name != "nt"

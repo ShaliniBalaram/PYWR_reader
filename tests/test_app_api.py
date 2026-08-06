@@ -769,6 +769,68 @@ class TestLaunchers(unittest.TestCase):
                                                   timeout=0.3))
 
 
+class TestPackagedBuild(unittest.TestCase):
+    """build_exe.py packages the app so it runs without Python installed."""
+
+    def test_the_frozen_build_never_bootstraps_a_venv(self):
+        # sys.executable is the app itself once packaged, so `-m venv` on it
+        # relaunches the app — which recurses until the machine gives up.
+        # This guard is the difference between "starts" and "fork bomb".
+        with mock.patch.object(app_module, "has_flask") as checked, \
+             mock.patch.object(app_module.subprocess, "run") as ran, \
+             mock.patch.object(app_module.sys, "frozen", True, create=True):
+            self.assertIsNone(app_module.bootstrap())
+        ran.assert_not_called()
+        checked.assert_not_called()   # doesn't even need to look
+
+    def test_browser_opening_precedence(self):
+        cases = [   # (argv, env, frozen) -> expected
+            ([], {}, False, False),                 # from source: quiet
+            ([], {}, True, True),                   # packaged: opens
+            (["--open"], {}, False, True),          # launchers pass this
+            (["--no-open"], {}, True, False),       # headless build server
+            (["--open", "--no-open"], {}, False, False),   # off wins
+            ([], {"PYWR_READER_OPEN": "1"}, False, True),
+            ([], {"PYWR_READER_OPEN": "0"}, True, False),
+            ([], {"PYWR_READER_OPEN": ""}, True, False),
+        ]
+        for argv, env, frozen, expected in cases:
+            with self.subTest(argv=argv, env=env, frozen=frozen):
+                self.assertEqual(
+                    app_module.wants_browser(argv, env, frozen), expected)
+
+    def test_the_build_ships_the_scripts_that_run_as_subprocesses(self):
+        # runner.py and dataview.py are handed to a *separate* interpreter (the
+        # pywr environment), so they must exist as real files in the bundle,
+        # not merely as modules compiled into the binary
+        src = pathlib.Path(ROOT, "build_exe.py").read_text(encoding="utf-8")
+        for name in ("runner.py", "dataview.py", "static", "examples"):
+            self.assertIn(name, src, f"build_exe.py does not bundle {name}")
+
+    def test_the_workflow_builds_on_windows(self):
+        # a .exe cannot be cross-compiled from macOS/Linux — if the Windows
+        # runner ever disappears from this matrix, there is no .exe
+        workflow = pathlib.Path(ROOT, ".github", "workflows", "build.yml")
+        self.assertTrue(workflow.is_file(), "no build workflow")
+        text = workflow.read_text(encoding="utf-8")
+        self.assertIn("windows-latest", text)
+        self.assertIn("build_exe.py", text)
+        self.assertIn("--no-open", text)   # or the runner waits on a browser
+
+    def test_app_dir_follows_the_bundle_when_frozen(self):
+        # PyInstaller unpacks bundled data to _MEIPASS; static/ has to be found
+        # there, not next to a source file that isn't shipped
+        import importlib
+
+        from pywr_reader.api import util
+        with mock.patch.object(util.sys, "frozen", True, create=True), \
+             mock.patch.object(util.sys, "_MEIPASS", "/tmp/bundle", create=True):
+            reloaded = importlib.reload(util)
+            self.assertEqual(reloaded.APP_DIR, "/tmp/bundle")
+        importlib.reload(util)          # put the real path back for other tests
+        self.assertTrue(os.path.isdir(os.path.join(util.APP_DIR, "static")))
+
+
 class TestDefinitionApi(unittest.TestCase):
     """Renaming and deleting parameters / recorders / tables over the API —
     the counterpart of /api/node/rename for the blocks nodes point at."""

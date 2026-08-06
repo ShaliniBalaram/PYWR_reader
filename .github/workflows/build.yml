@@ -1,0 +1,86 @@
+name: Build executables
+
+# PyInstaller is not a cross-compiler — a Windows .exe has to be built on
+# Windows, a Mac binary on a Mac. GitHub's runners provide both, so this is
+# how the downloads on the Releases page are produced.
+#
+#   • every push / PR touching the app → build both, keep them as artifacts
+#     you can download from the run's summary page (kept 30 days)
+#   • push a tag like v1.0 → the same binaries are attached to a Release
+#
+# Run it by hand any time from the Actions tab → Build executables → Run
+# workflow.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed only by the release step
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # a Mac failure shouldn't hide a working .exe
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: PyWR-Reader-Windows
+            binary: dist/PyWR Reader.exe
+          - os: macos-latest
+            artifact: PyWR-Reader-macOS
+            binary: dist/PyWR Reader
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # PyInstaller bundles what it can import, so the app's own requirements
+      # have to be installed alongside it, not just in some other environment
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build_exe.py
+
+      # Proof the thing actually starts: run it on a spare port and ask it for
+      # a page. A binary that builds but dies on launch is the failure mode
+      # worth catching here — it is invisible until someone downloads it.
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --no-open &
+          pid=$!
+          for i in $(seq 1 45); do
+            if curl -fsS -o /dev/null http://127.0.0.1:5321/; then
+              echo "started and served the page"
+              kill $pid 2>/dev/null || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the binary never served a page"
+          kill $pid 2>/dev/null || true
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.binary }}

@@ -75,8 +75,13 @@ def bootstrap():
     inside .venv costs one cheap import and behaves exactly as before.
     Otherwise it creates .venv beside the app, installs the requirements into
     it, and hands over to that interpreter.
+
+    A packaged build never gets here: its dependencies are baked in, and
+    sys.executable is the app itself, so handing that to `-m venv` relaunches
+    the app rather than building an environment — which recurses until the
+    machine gives up.
     """
-    if has_flask():
+    if getattr(sys, "frozen", False) or has_flask():
         return
     if os.environ.get(BOOTSTRAP_ENV):        # already tried once — don't loop
         _die("PyWR Reader still cannot import Flask after setting up .venv.",
@@ -154,6 +159,26 @@ def is_pywr_reader(url, timeout=1.5):
         return False
 
 
+def wants_browser(argv=None, environ=None, frozen=None):
+    """Should starting the app open a browser?
+
+    --no-open beats --open beats PYWR_READER_OPEN beats the default. The
+    default is off from source (a terminal already tells you the URL) and on
+    for a packaged build, which is a thing you double-click.
+    """
+    argv = sys.argv if argv is None else argv
+    environ = os.environ if environ is None else environ
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    if "--no-open" in argv:
+        return False
+    if "--open" in argv:
+        return True
+    setting = environ.get("PYWR_READER_OPEN")
+    if setting is not None:
+        return setting not in ("", "0", "false")
+    return bool(frozen)
+
+
 def open_when_ready(url, port, tries=100, delay=0.1):
     """Open the browser once the server answers. Waiting matters: opening it
     immediately lands on a connection-refused page, which looks like a broken
@@ -168,8 +193,7 @@ def open_when_ready(url, port, tries=100, delay=0.1):
 if __name__ == "__main__":
     port = int(os.environ.get("PYWR_READER_PORT", "5321"))
     url = f"http://127.0.0.1:{port}"
-    # the launchers pass --open; a bare `python app.py` stays quiet as before
-    want_browser = "--open" in sys.argv or bool(os.environ.get("PYWR_READER_OPEN"))
+    want_browser = wants_browser()
 
     if port_in_use(port):
         # double-clicking the launcher twice shouldn't be a traceback

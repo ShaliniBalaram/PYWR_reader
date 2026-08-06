@@ -35,10 +35,39 @@ Verified on a real 80-year, 29,586-timestep zone model of 162 nodes.
 
 ## Install
 
+Two ways: **download a ready-made executable** (no Python at all), or **run it
+from source** (needs Python 3.9+, installs its one dependency itself).
+
+### Download the app — nothing to install
+
+Grab the file for your machine from the
+[Releases page](https://github.com/ShaliniBalaram/PYWR_reader/releases), or from
+the latest [Actions run](https://github.com/ShaliniBalaram/PYWR_reader/actions)
+if there's no release yet:
+
+| | Download | Then |
+|---|---|---|
+| **Windows** | `PyWR Reader.exe` | Double-click it |
+| **macOS** | `PyWR Reader` | Right-click → **Open**, then **Open** |
+
+It carries its own Python and Flask (~12 MB), starts, and opens your browser.
+**No Python, no pip, no admin rights.** The first launch takes a few seconds
+longer while it unpacks itself.
+
+Neither build is code-signed, so both operating systems will warn about an
+unidentified developer the first time. On macOS the right-click → Open route
+gets past it; on Windows use **More info → Run anyway**.
+
+> To *run models* it still needs pywr, which it sets up on demand into a
+> `.pywr-env` folder **next to the executable** — so keep the executable
+> somewhere writable, like your Desktop, rather than in Program Files.
+
+### Or run it from source
+
 You need **Python 3.9 or newer**. Nothing else — the app installs its one
 dependency itself.
 
-### Double-click it
+#### Double-click it
 
 In the `PYWR_reader` folder:
 
@@ -55,7 +84,7 @@ the `.command` to your Dock to keep it handy.
 > developer: **right-click → Open**, then **Open** once. After that,
 > double-clicking works normally.
 
-### Or from a terminal
+#### Or from a terminal
 
 **macOS / Linux**
 
@@ -83,7 +112,7 @@ needed.
 > Running *simulations* also needs pywr — you don't install that yourself
 > either; see [Running simulations](#running-simulations).
 
-### If you don't have Python
+#### If you don't have Python
 
 - **Windows:** get it from [python.org](https://www.python.org/downloads/windows/)
   and **tick "Add Python to PATH"** on the installer's first screen. Use `py`
@@ -97,7 +126,7 @@ On Windows the **Open** dialog lists your real drive letters, so a model on `D:`
 or a network drive is reachable. You never need to "activate" the environment —
 if PowerShell blocks activation scripts, it doesn't matter.
 
-### Setting it up by hand
+#### Setting it up by hand
 
 Nothing wrong with doing it yourself — useful if you keep environments your own
 way, or if the automatic setup can't reach the internet:
@@ -110,6 +139,25 @@ python3 -m venv .venv                          # py -m venv .venv on Windows
 
 `python app.py` notices an existing `.venv` and uses it, so both styles end up
 in the same place.
+
+#### Building the executable yourself
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python build_exe.py
+```
+
+That writes `dist/PyWR Reader.exe` on Windows, `dist/PyWR Reader` elsewhere.
+PyInstaller is not a cross-compiler, so **you get a binary for the machine you
+build on** — a Windows .exe has to be built on Windows. That's what
+`.github/workflows/build.yml` does: it builds both on GitHub's runners, checks
+each one actually starts and serves a page, and attaches them to a release when
+you push a `v*` tag.
+
+pywr is deliberately *not* bundled — a scientific stack with compiled solvers
+would multiply the download for everyone, including people who only read
+models. The packaged app sets it up on demand, exactly as the source version
+does.
 
 ### First run
 
@@ -375,7 +423,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**216 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**221 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -406,6 +454,8 @@ the culprit. To enable the browser tests:
 ```
 PYWR_reader/
 ├── Start PyWR Reader.command / .bat   double-click launchers (macOS / Windows)
+├── build_exe.py              package it into a standalone executable
+├── .github/workflows/        CI: builds the Windows .exe and Mac binary
 ├── app.py                    thin entry point — builds Flask, registers blueprints
 ├── pywr_reader/
 │   ├── session.py            Workspace + RunStore — the open model and its runs
@@ -433,7 +483,7 @@ PYWR_reader/
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    216 unittest tests
+├── tests/                    221 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests

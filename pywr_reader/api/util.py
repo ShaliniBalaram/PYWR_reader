@@ -1,12 +1,16 @@
 """Shared helpers for the API blueprints."""
 
 import os
+import sys
 
 from flask import jsonify
 
-# The project root (where app.py, static/ and the pywr_reader package live).
-# api/util.py → api → pywr_reader → project root.
-APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Where static/ and the helper scripts live. Normally the project root
+# (api/util.py → api → pywr_reader → root); in a packaged build it's the
+# folder PyInstaller unpacks the bundled data into.
+APP_DIR = (sys._MEIPASS if getattr(sys, "frozen", False)
+           else os.path.dirname(os.path.dirname(os.path.dirname(
+               os.path.abspath(__file__)))))
 
 
 def err(msg, code=400):
