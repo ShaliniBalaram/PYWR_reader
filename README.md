@@ -35,64 +35,61 @@ Verified on a real 80-year, 29,586-timestep zone model of 162 nodes.
 
 ## Install
 
-You need **Python 3.9 or newer**. Everything else is one dependency (Flask) —
-so the install is three commands on every platform, and the app is a local web
-page at `http://127.0.0.1:5321`.
+You need **Python 3.9 or newer**. Nothing else — the app installs its one
+dependency itself.
 
-> Running *simulations* additionally needs pywr, but **you never install that
-> yourself** — see [Running simulations](#running-simulations) below.
-
-### macOS
-
-Python 3 is already present on macOS 12+. Open **Terminal**:
+**macOS / Linux**
 
 ```bash
 cd PYWR_reader
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
-./.venv/bin/python app.py
+python3 app.py
 ```
 
-Then open <http://127.0.0.1:5321>. If macOS says `python3` isn't found, it will
-offer to install the developer tools — accept, then run the commands again.
-
-### Windows
-
-Install Python from [python.org](https://www.python.org/downloads/windows/) if
-you don't have it, **ticking "Add Python to PATH"** on the first screen of the
-installer. Then open **PowerShell** or **Command Prompt**:
+**Windows** (PowerShell or Command Prompt)
 
 ```bat
 cd PYWR_reader
-py -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python app.py
+py app.py
 ```
 
-Then open <http://127.0.0.1:5321>.
+Then open **<http://127.0.0.1:5321>**.
 
-Notes for Windows:
+The first run prints *creating a private environment* and *installing Flask*,
+builds a `.venv` folder beside the app, and starts. That takes a few seconds and
+needs internet **once**. Every run after that starts immediately and works
+offline. Nothing is installed outside this folder, and no admin rights are
+needed.
 
-- Use `py` rather than `python3` — that's the launcher the installer sets up.
-- The paths use **backslashes** and there is no `./` prefix.
-- If PowerShell blocks the activation script, you don't need to activate
-  anything — calling `.venv\Scripts\python` directly (as above) always works.
-- The Open dialog lists your real drive letters, so a model on `D:` or a
-  network drive is reachable.
+> Running *simulations* also needs pywr — you don't install that yourself
+> either; see [Running simulations](#running-simulations).
 
-### Linux
+### If you don't have Python
 
-Most distributions need the `venv` package installed separately:
+- **Windows:** get it from [python.org](https://www.python.org/downloads/windows/)
+  and **tick "Add Python to PATH"** on the installer's first screen. Use `py`
+  rather than `python3` — that's the launcher the installer sets up.
+- **macOS:** Python 3 ships with macOS 12+. If `python3` isn't found, macOS
+  offers to install the developer tools — accept, then run the command again.
+- **Linux:** most distributions package the `venv` module separately, so
+  `sudo apt install python3-venv` (or your distro's equivalent) first.
+
+On Windows the **Open** dialog lists your real drive letters, so a model on `D:`
+or a network drive is reachable. You never need to "activate" the environment —
+if PowerShell blocks activation scripts, it doesn't matter.
+
+### Setting it up by hand
+
+Nothing wrong with doing it yourself — useful if you keep environments your own
+way, or if the automatic setup can't reach the internet:
 
 ```bash
-sudo apt install python3-venv        # Debian/Ubuntu; use dnf/pacman elsewhere
-cd PYWR_reader
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
-./.venv/bin/python app.py
+python3 -m venv .venv                          # py -m venv .venv on Windows
+./.venv/bin/pip install -r requirements.txt    # .venv\Scripts\pip …
+./.venv/bin/python app.py                      # .venv\Scripts\python app.py
 ```
 
-Then open <http://127.0.0.1:5321>.
+`python app.py` notices an existing `.venv` and uses it, so both styles end up
+in the same place.
 
 ### First run
 
@@ -358,7 +355,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**205 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**210 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -415,7 +412,7 @@ PYWR_reader/
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    205 unittest tests
+├── tests/                    210 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests

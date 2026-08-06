@@ -669,6 +669,50 @@ class TestApi(unittest.TestCase):
         self.assertEqual(ab["series"], [30])           # min(A=50, B=30)
 
 
+class TestBootstrap(unittest.TestCase):
+    """`python app.py` sets itself up on first run, so nobody has to remember
+    the venv/pip dance. The end-to-end path (create .venv, install, re-exec)
+    needs a network and a Python without Flask, so it isn't run here — these
+    pin the pieces that decide *what* it would do."""
+
+    def test_bootstrap_is_a_no_op_when_flask_is_importable(self):
+        # the whole suite imports app, so this must never shell out
+        self.assertTrue(app_module.has_flask())
+        with mock.patch.object(app_module.subprocess, "run") as run:
+            self.assertIsNone(app_module.bootstrap())
+        run.assert_not_called()
+
+    def test_venv_python_path_per_platform(self):
+        with mock.patch.object(app_module.os, "name", "nt"):
+            self.assertEqual(app_module.venv_python("V"),
+                             os.path.join("V", "Scripts", "python.exe"))
+        with mock.patch.object(app_module.os, "name", "posix"):
+            self.assertEqual(app_module.venv_python("V"),
+                             os.path.join("V", "bin", "python"))
+
+    def test_manual_steps_use_this_platforms_spelling(self):
+        # the fallback message is only useful if it can be copy-pasted
+        with mock.patch.object(app_module.os, "name", "nt"):
+            steps = "\n".join(app_module.manual_steps())
+        self.assertIn(r".venv\Scripts\python app.py", steps)
+        self.assertNotIn("./.venv", steps)
+        with mock.patch.object(app_module.os, "name", "posix"):
+            steps = "\n".join(app_module.manual_steps())
+        self.assertIn("./.venv/bin/python app.py", steps)
+
+    def test_has_flask_reports_on_another_interpreter(self):
+        self.assertTrue(app_module.has_flask(sys.executable))
+        # a path that isn't an interpreter must be False, not an exception
+        self.assertFalse(app_module.has_flask(os.path.join(ROOT, "README.md")))
+
+    def test_the_readme_badge_matches_the_enforced_minimum(self):
+        # app.py refuses to start below MIN_PYTHON; the badge must say the same
+        readme = pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8")
+        major, minor = app_module.MIN_PYTHON
+        self.assertIn(f"Python-{major}.{minor}+", readme)
+        self.assertIn(f"Python {major}.{minor} or newer", readme)
+
+
 class TestDefinitionApi(unittest.TestCase):
     """Renaming and deleting parameters / recorders / tables over the API —
     the counterpart of /api/node/rename for the blocks nodes point at."""
