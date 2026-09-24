@@ -15,6 +15,7 @@ import { recordersFor, recorderDef, suggestName as suggestRecorderName }
   from "./catalog.js";
 import { bundlesBlock } from "./bundles.js";
 import { isPdf, pdfFirstPageToPng } from "./pdfimport.js";
+import { initResults, toggleResults, resultsChanged } from "./results.js";
 
 $("modal-backdrop").addEventListener("mousedown", e => {
   if (e.target === $("modal-backdrop")) closeModal();
@@ -176,6 +177,7 @@ export function selectNode(name) {
   renderNodePanel();
   setTab("node");
   dockSelectionChanged();
+  resultsChanged();
 }
 function selectEdge(idx) {
   const e = S.graph.edges[idx];
@@ -1592,6 +1594,7 @@ async function activateRun(runId) {
     await ensureBlock(blockOf(S.t));
     updateFrameVisuals();
     renderNodeChart();
+    resultsChanged();          // results dock, if it's open
   } catch (err) { toast(err.message, true); }
 }
 
@@ -1737,7 +1740,7 @@ function stopPlay() {
 }
 
 /* ------------------------------------------------------------- chart */
-async function getSeries(runId, node) {
+export async function getSeries(runId, node) {
   const key = runId + "|" + node;
   if (!S.seriesCache.has(key)) {
     S.seriesCache.set(key, await api(`/api/run/${runId}/series?node=${encodeURIComponent(node)}`));
@@ -1792,8 +1795,9 @@ async function renderNodeChart() {
   }
 }
 
-function buildChart(seriesList) {
-  const W = 312, H = 170, m = { l: 44, r: 10, t: 8, b: 22 };
+export function buildChart(seriesList, { width = 312, height = 170 } = {}) {
+  // the defaults are the sidebar's size; the results dock passes its own
+  const W = width, H = height, m = { l: 44, r: 10, t: 8, b: 22 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const n = Math.max(...seriesList.map(s => s.values.length));
   let lo = Infinity, hi = -Infinity;
@@ -1885,8 +1889,10 @@ function buildChart(seriesList) {
 }
 
 function updateChartCursor() {
-  const box = document.querySelector("#tab-node .chart-box");
-  if (box && box._updateCursor) box._updateCursor();
+  // the node panel's chart and the results dock's, whichever are on screen
+  for (const box of document.querySelectorAll(".chart-box")) {
+    if (box._updateCursor) box._updateCursor();
+  }
 }
 
 /* ------------------------------------------------------------- env */
@@ -2142,6 +2148,7 @@ window.addEventListener("resize", applyView);
   setMode("select");
   renderWhatIf();
   initDock();
+  initResults();
   try { if (localStorage.getItem("pywr_reader_sidebar") === "1")
     setSidebarCollapsed(true); } catch { /* ignore */ }
   await Promise.all([refreshGraph(), refreshEnv(), refreshRuns(), loadLayouts(),
@@ -2157,5 +2164,5 @@ window.addEventListener("resize", applyView);
 
 // Debug/test surface: the browser smoke tests call these by name via
 // page.evaluate, which runs in the page global scope (module scope is private).
-Object.assign(window, { S, selectNode, updateGraph, openModelExplorer, toggleDock,
+Object.assign(window, { S, selectNode, updateGraph, openModelExplorer, toggleDock, toggleResults, buildChart,
   download });

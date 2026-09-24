@@ -220,6 +220,39 @@ class TestFrontendSmoke(unittest.TestCase):
         finally:
             page.close()
 
+    # -- results dock ----------------------------------------------------
+    def test_the_results_dock_opens_and_says_when_there_is_nothing_to_plot(self):
+        # no run has been solved in this test, so it should say so rather than
+        # show an empty chart frame
+        self.page.evaluate("toggleResults(true)")
+        self.page.wait_for_selector("#resultsdock:not(.hidden)")
+        self.assertIn("No results yet", self.page.inner_text("#results-body"))
+        self.page.click("#results-close")
+        self.assertFalse(self.page.locator("#resultsdock").is_visible())
+        self.assertNoConsoleErrors()
+
+    def test_both_docks_can_be_open_without_overflowing(self):
+        # they stack under the canvas; the canvas has to give up the space
+        self.page.evaluate("toggleResults(true); toggleDock(true)")
+        self.page.wait_for_selector("#resultsdock:not(.hidden)")
+        fits = self.page.evaluate("""() => {
+          const h = id => document.getElementById(id).getBoundingClientRect().height;
+          const col = document.getElementById('canvas-col').getBoundingClientRect().height;
+          return h('canvas-wrap') + h('resultsdock') + h('jsondock') <= col + 2;
+        }""")
+        self.assertTrue(fits, "the docks overflow the canvas column")
+        self.assertNoConsoleErrors()
+
+    def test_the_node_panel_chart_keeps_its_own_size(self):
+        # buildChart gained width/height options for the results dock; the
+        # sidebar must still get exactly the chart it had before
+        size = self.page.evaluate(
+            "() => buildChart([{label: 'a', color: '#fff', dates: ['2000-01-01'],"
+            "                   values: [1, 2, 3], kind: 'flow'}])"
+            "        .querySelector('svg').getAttribute('viewBox')")
+        self.assertEqual(size, "0 0 312 170")
+        self.assertNoConsoleErrors()
+
     def test_the_side_panel_collapses_and_comes_back(self):
         panel = self.page.locator("#sidebar")
         self.assertTrue(panel.is_visible())

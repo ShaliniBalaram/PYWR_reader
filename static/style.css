@@ -512,3 +512,38 @@ pre.log { background: var(--page); border: 1px solid var(--grid);
 .warn-badge:hover { background: #4a3a10; }
 .warn-list { margin: 6px 0 0; padding-left: 18px; }
 .warn-list li { margin: 3px 0; color: var(--ink-2); font-size: 12px; }
+
+/* ---------- results dock (model output across the bottom) ---------- */
+#resultsdock {
+  height: 260px; flex: none;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border-top: 1px solid var(--border);
+}
+#results-grip { height: 6px; flex: none; cursor: ns-resize; background: var(--surface-2); }
+#results-grip:hover { background: var(--accent); }
+#results-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 6px 10px; border-bottom: 1px solid var(--grid);
+}
+#results-head .dock-label { color: var(--ink); font-weight: 600; }
+#results-head .spacer { flex: 1; }
+#results-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+.res-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.res-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; border-radius: 99px; font-size: 11px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.res-chip.pinned { border-color: var(--baseline); }
+.res-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.res-chip .res-name {
+  background: none; border: 0; padding: 0; color: var(--ink);
+  font-size: 11px; cursor: pointer;
+}
+.res-chip .res-name:hover { text-decoration: underline; }
+.res-kind { color: var(--muted); }
+.res-chip .res-pin {
+  background: none; border: 0; padding: 0 0 0 2px;
+  color: var(--muted); font-size: 11px; cursor: pointer;
+}
+.res-chip .res-pin:hover { color: var(--ink); }

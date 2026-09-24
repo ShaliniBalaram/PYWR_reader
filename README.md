@@ -204,6 +204,18 @@ Then:
 5. **Scenarios:** if the model defines pywr scenarios, a picker chooses which
    ensemble member is drawn.
 
+**The results plot.** **▦ Results** in the toolbar opens a plot across the
+bottom of the window, so you can watch the output while you move around the
+network. It charts whatever node is selected; **Pin selected** keeps a node on
+the chart when you move to another, so you can build up a comparison across the
+network. Click a chip's name to jump back to that node on the canvas, and the
+dashed cursor tracks the time slider — click the chart to scrub.
+
+This complements the chart in the node panel rather than replacing it: that one
+shows *one node across several runs* (did my change help?), this one shows
+*several nodes from one run* (what is happening across the network?). Flow and
+volume can share the axis if you mix node types, and it says so when they do.
+
 **Getting results out.** Runs live in memory, so save what you need:
 
 | Button | What you get |
@@ -426,7 +438,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**226 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**229 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -482,11 +494,12 @@ PYWR_reader/
 │   ├── dataviewer.js             the h5/xlsx/csv table + plot modal
 │   ├── explorer.js               Browse model, edit / rename / delete entries
 │   ├── jsondock.js               the live JSON dock that follows the selection
+│   ├── results.js                the results plot docked across the bottom
 │   ├── catalog.js                recorder / parameter / chain templates
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    226 unittest tests
+├── tests/                    229 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests

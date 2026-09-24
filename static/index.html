@@ -48,6 +48,7 @@
       </button>
     </div>
   </div>
+  <button id="btn-results" title="Results plot -- model output across the bottom">▦ Results</button>
   <button id="btn-dock" title="Live JSON — a JSON view that follows what you select">{ } JSON</button>
   <span class="sep"></span>
   <button id="btn-run" class="primary" title="Run the model with pywr">▶ Run</button>
@@ -123,6 +124,18 @@
     </div>
   </div>
 
+  <div id="resultsdock" class="hidden">
+    <div id="results-grip" title="Drag to resize"></div>
+    <div id="results-head">
+      <span class="dock-label">Results</span>
+      <span id="results-run" class="muted small"></span>
+      <span class="spacer"></span>
+      <button id="results-pin" class="tiny" title="Keep the selected node plotted while you look at others">Pin selected</button>
+      <button id="results-clear" class="tiny" title="Unpin every node">Clear</button>
+      <button id="results-close" class="tiny" title="Hide the results plot">✕</button>
+    </div>
+    <div id="results-body"></div>
+  </div>
   <div id="jsondock" class="hidden">
     <div id="dock-grip" title="Drag to resize"></div>
     <div id="dock-head">
