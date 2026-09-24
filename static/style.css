@@ -213,6 +213,8 @@ body {
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
 }
 .menu.hidden { display: none; }
+/* pinned to the button's right edge when hanging left would overflow */
+.menu.flip-right { left: auto; right: 0; }
 .menu-item {
   display: flex; flex-direction: column; gap: 1px;
   text-align: left; background: none; border: none; border-radius: 5px;
@@ -547,3 +549,110 @@ pre.log { background: var(--page); border: 1px solid var(--grid);
   color: var(--muted); font-size: 11px; cursor: pointer;
 }
 .res-chip .res-pin:hover { color: var(--ink); }
+
+/* ------------------------------------------------- View menu (viewprefs) */
+#view-menu { min-width: 234px; padding-bottom: 4px; }
+.menu-head {
+  padding: 6px 10px 3px; font-size: 10px; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--muted);
+}
+.menu-head:not(:first-child) { border-top: 1px solid #333; margin-top: 4px; }
+.menu-check {
+  display: flex; align-items: center; gap: 7px;
+  padding: 3px 10px; font-size: 12px; color: var(--ink); cursor: pointer;
+}
+.menu-check:hover { background: #2d2d2b; }
+.menu-check input { accent-color: #2a78d6; cursor: pointer; }
+/* a category whose own toggle is overridden by "show every label" */
+.menu-check-off > span { color: var(--muted); }
+/* a category this model has no nodes of */
+.menu-check-empty { opacity: .45; cursor: default; }
+.menu-count { margin-left: auto; color: var(--muted); font-size: 11px; }
+.menu-hint.pad { padding: 3px 10px 5px; display: block; }
+#btn-view.has-tcm::after {
+  content: "\2022"; color: #2a78d6; margin-left: 3px; font-size: 14px;
+  line-height: 0; vertical-align: middle;
+}
+
+/* ---------- ask(): the app's own confirm dialog ---------- */
+.ask-items {
+  margin: 8px 0 0; padding: 8px 10px 8px 26px; max-height: 190px; overflow: auto;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ask-items li { margin: 2px 0; color: var(--ink-2); word-break: break-all; }
+.ask-buttons { margin-top: 14px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* ---------- broken-reference badge and block ---------- */
+#ref-badge {
+  color: #e8b339; border: 1px solid #6b5320; background: #33280c;
+  border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600;
+  cursor: pointer;
+}
+#ref-badge:hover { background: #4a3a10; }
+.pane-block.warn-block { border-left: 3px solid var(--warning); padding-left: 9px; }
+.fail-hint {
+  background: #33280c; border: 1px solid #6b5320; border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 10px;
+}
+.fail-hint p { margin: 0 0 4px; color: #e8b339; }
+.fail-hint .warn-list li { color: var(--ink); }
+/* a legend entry a View filter is currently hiding */
+.legend-off { opacity: .45; }
+
+/* ---------- run progress ---------- */
+.run-item.clickable { cursor: pointer; }
+.run-item.clickable:hover { background: #2d2d2b; }
+.run-progress { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+.run-bar {
+  flex: 0 0 86px; height: 5px; border-radius: 3px; overflow: hidden;
+  background: var(--grid);
+}
+.run-bar-fill {
+  display: block; height: 100%; background: var(--accent);
+  transition: width .2s linear;
+}
+
+/* ---------- chart zoom ---------- */
+.chart-box { position: relative; }
+.chart-reset {
+  position: absolute; top: 6px; right: 8px;
+  padding: 1px 7px; font-size: 10px; border-radius: 6px;
+  background: var(--surface-2); color: var(--ink-2);
+  border: 1px solid var(--border); cursor: pointer;
+}
+.chart-reset:hover { color: var(--ink); border-color: var(--baseline); }
+.chart-box svg { cursor: crosshair; }
+
+/* ---------- results dock: comparing runs ---------- */
+.tiny-check {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--ink-2); cursor: pointer;
+}
+.tiny-check input { accent-color: #2a78d6; cursor: pointer; }
+.res-chip.run { border-style: dashed; }
+.res-chip .res-name.run { color: var(--ink-2); cursor: default; }
+.res-chip .res-name.run:hover { text-decoration: none; }
+.res-dash { display: inline-flex; align-items: center; color: var(--ink-2); }
+
+/* ---------- time bar: speed and date jump ---------- */
+#play-speed, #time-goto {
+  background: var(--surface-2); color: var(--ink-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 4px; font-size: 11px;
+}
+#time-goto { font-family: ui-monospace, Menlo, monospace; }
+
+/* the model's own close button, on the file chip rather than in the crowded
+   left-hand run of toolbar buttons */
+.chip-close {
+  background: none; border: 1px solid transparent; color: var(--muted);
+  padding: 1px 6px; border-radius: 6px; font-size: 11px; cursor: pointer;
+}
+.chip-close:hover { color: var(--ink); border-color: var(--border);
+                    background: var(--surface-2); }
+
+/* ---------- explorer filter count ---------- */
+.explorer-filter-row { align-items: center; margin-bottom: 8px; }
+.explorer-filter-row .explorer-filter { flex: 1; margin-bottom: 0; }
+.explorer-count { flex: none; min-width: 64px; text-align: right; }

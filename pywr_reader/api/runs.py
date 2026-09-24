@@ -57,6 +57,42 @@ def estimate_edge_flows(model, node_series, exact_edges=None):
 RUN_TMP_PREFIX = ".pywr_reader_run_"
 
 
+def failure_hints(model, error):
+    """Say in the app's own words what a pywr traceback means, when we can.
+
+    By far the most common failure is a reference to something that was
+    deleted, and pywr reports it as a bare KeyError from inside a .pyx file.
+    The model already knows which references point nowhere, so match the name
+    pywr choked on against that list and name the thing that holds it."""
+    dangling = graphops.dangling_references(model)
+    if not dangling:
+        return []
+    text = str(error or "")
+    hits = [note for note in dangling
+            if note.split(" references ")[-1].split(",")[0].strip("'\"") in text]
+    if not hits:
+        # the model is broken even if this particular error isn't obviously it
+        return [f"This model has {len(dangling)} reference(s) to names it does "
+                "not define — see the Model tab. That is the usual cause."]
+    return [f"{h}." for h in hits[:3]]
+
+
+def read_progress(run):
+    """How far a running run has got: {step, total}, or None."""
+    path = run.get("progress_path")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None           # not written yet, or caught mid-replace
+    if not isinstance(data, dict) or "step" not in data:
+        return None
+    return {"step": int(data.get("step") or 0),
+            "total": int(data.get("total") or 0)}
+
+
 def sweep_run_temps(directory):
     """Delete orphaned run snapshots. The run itself removes its own, but a
     force-quit or a crash skips that — and the snapshot has to sit beside the
@@ -83,6 +119,8 @@ def _run_worker(run_id, model_snapshot, model_path, overrides):
     sweep_run_temps(workdir)
     tmp_model = os.path.join(workdir, f"{RUN_TMP_PREFIX}{run_id}.json")
     tmp_out = os.path.join(tempfile.gettempdir(), f"pywr_reader_{run_id}.json")
+    tmp_prog = os.path.join(tempfile.gettempdir(), f"pywr_reader_prog_{run_id}.json")
+    run["progress_path"] = tmp_prog
     tmp_over = None
     try:
         with open(tmp_model, "w", encoding="utf-8") as fh:
@@ -96,8 +134,11 @@ def _run_worker(run_id, model_snapshot, model_path, overrides):
                 json.dump(overrides, fh)
             cmd.append(tmp_over)
         run["status"] = "running"
+        # the runner reports how far it has got here; the status endpoint
+        # reads it, since this thread is blocked until the run ends
+        env = dict(os.environ, PYWR_READER_PROGRESS=tmp_prog)
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=3600)
+                              timeout=3600, env=env)
         result = None
         if os.path.isfile(tmp_out):
             with open(tmp_out, encoding="utf-8") as fh:
@@ -117,6 +158,7 @@ def _run_worker(run_id, model_snapshot, model_path, overrides):
                             or proc.stderr[-4000:] or proc.stdout[-4000:]
                             or "runner produced no output")
             run["traceback"] = (result or {}).get("traceback")
+            run["hints"] = failure_hints(model_snapshot, run["error"])
     except subprocess.TimeoutExpired:
         run["status"] = "failed"
         run["error"] = "run timed out after 1 hour"
@@ -125,7 +167,9 @@ def _run_worker(run_id, model_snapshot, model_path, overrides):
         run["error"] = repr(exc)
     finally:
         run["finished_at"] = time.time()
-        for tmp in (tmp_model, tmp_out, tmp_over):
+        run.pop("progress_path", None)
+        RUNS.release(run_id)     # the snapshot can be swept again
+        for tmp in (tmp_model, tmp_out, tmp_over, tmp_prog):
             if tmp and os.path.isfile(tmp):
                 with contextlib.suppress(OSError):
                     os.remove(tmp)
@@ -196,7 +240,10 @@ def list_runs():
                     "warnings": run.get("warnings", []),
                     "overrides": bool(run.get("overrides")),
                     "scenario_index": run.get("scenario_index", 0),
-                    "scenario_label": run.get("scenario_label")})
+                    "scenario_label": run.get("scenario_label"),
+                    "started_at": run.get("started_at"),
+                    "finished_at": run.get("finished_at"),
+                    "progress": read_progress(run)})
     return jsonify({"ok": True, "runs": out})
 
 
@@ -208,9 +255,12 @@ def run_status(run_id):
     out = {"ok": True, "id": run_id, "status": run["status"],
            "label": run["label"], "error": run.get("error"),
            "traceback": run.get("traceback"), "meta": run.get("meta"),
-           "warnings": run.get("warnings", []),
+           "warnings": run.get("warnings", []), "hints": run.get("hints", []),
            "scenario_index": run.get("scenario_index", 0),
-           "scenario_label": run.get("scenario_label")}
+           "scenario_label": run.get("scenario_label"),
+           "started_at": run.get("started_at"),
+           "finished_at": run.get("finished_at"),
+           "progress": read_progress(run)}
     if run["status"] == "done":
         dates = run["dates"]
         out["n_steps"] = len(dates)

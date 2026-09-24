@@ -11,7 +11,13 @@ from flask import Blueprint, jsonify, request, send_from_directory
 from pywr_reader import graphops, model_io
 from pywr_reader import layout as layout_mod
 from pywr_reader.api.util import APP_DIR, err
-from pywr_reader.session import WORKSPACE, normalize_positions
+from pywr_reader.session import (
+    RUNS,
+    WORKSPACE,
+    apply_normalize_transform,
+    normalize_positions,
+    normalize_transform,
+)
 
 bp = Blueprint("files", __name__)
 
@@ -136,6 +142,24 @@ def example_model():
     return jsonify({"ok": True, "path": path})
 
 
+def _view_prefs(tcm_view, transform):
+    """A .tcm's presentation state, with its camera moved into the coordinate
+    space the positions ended up in. Returns None when there is nothing to
+    carry, so the frontend can simply test for absence."""
+    if not tcm_view:
+        return None
+    prefs = dict(tcm_view)
+    port = prefs.get("viewport")
+    if port:
+        scale, _, _ = transform
+        prefs["viewport"] = {
+            "origin": apply_normalize_transform(port["origin"], transform),
+            # pixels per world unit, restated for the rescaled positions
+            "scale": port["scale"] / scale,
+        }
+    return prefs
+
+
 @bp.post("/api/open")
 def open_model():
     body = request.get_json(force=True)
@@ -145,9 +169,13 @@ def open_model():
 
     # A .tcm opened while a model is already loaded applies its positions to
     # that model (the natural "open model, then open its view file" flow).
-    if path.lower().endswith(".tcm") and WORKSPACE.model is not None:
+    # "as_model" is how the UI says "no, open the model this .tcm describes
+    # instead" — otherwise a .tcm whose names don't match the open model could
+    # only ever be applied, never opened, once anything was on screen.
+    if (path.lower().endswith(".tcm") and WORKSPACE.model is not None
+            and not body.get("as_model")):
         try:
-            tcm_positions, _, _ = model_io.load_tcm(path)
+            tcm_positions, _, _, tcm_view = model_io.load_tcm(path)
         except Exception as exc:  # noqa: BLE001
             return err(exc)
         with WORKSPACE.lock:
@@ -159,16 +187,26 @@ def open_model():
                     matched += 1
             if matched:
                 all_names = [n["name"] for n in WORKSPACE.model.get("nodes", [])]
-                WORKSPACE.positions = normalize_positions(
-                    layout_mod.layout_missing(
-                        all_names, WORKSPACE.model.get("edges", []),
-                        WORKSPACE.positions))
+                laid_out = layout_mod.layout_missing(
+                    all_names, WORKSPACE.model.get("edges", []),
+                    WORKSPACE.positions)
+                transform = normalize_transform(laid_out)
+                WORKSPACE.positions = normalize_positions(laid_out)
+                WORKSPACE.view_prefs = _view_prefs(tcm_view, transform)
                 WORKSPACE.dirty = True
                 WORKSPACE.layout_was_auto = False
             WORKSPACE.warnings = ([f".tcm positions applied to {matched} of "
                                   f"{len(names)} nodes"] if matched else
                                  [".tcm node names did not match the open model"])
-        return jsonify(WORKSPACE.graph_payload())
+        payload = WORKSPACE.graph_payload()
+        # The open model stayed put and only its positions moved, so the runs
+        # and results still describe what is on screen. Say so plainly rather
+        # than leave the UI to infer it from the path.
+        payload["tcm_applied"] = True
+        # nothing matched: the .tcm almost certainly describes a different
+        # model, so tell the UI it can offer to open that one instead
+        payload["tcm_unmatched"] = not matched
+        return jsonify(payload)
 
     try:
         loaded = model_io.load_any(path)
@@ -187,10 +225,21 @@ def open_model():
         elif len(positions) < len(names):
             positions = layout_mod.layout_missing(
                 names, model.get("edges", []), positions)
+        # An auto-layout throws the source coordinates away, so a camera saved
+        # against them no longer points anywhere — drop it rather than aim it
+        # at the wrong part of a freshly invented layout.
+        transform = (1.0, 0.0, 0.0)
         if not auto:
+            transform = normalize_transform(positions)
             positions = normalize_positions(positions)
         WORKSPACE.load(model, positions, path=loaded["path"], auto=auto,
-                       warnings=loaded["warnings"])
+                       warnings=loaded["warnings"],
+                       view_prefs=None if auto else
+                       _view_prefs(loaded.get("view"), transform))
+        # A run describes the model it solved. Keeping the old ones would drive
+        # the time slider with another model's dates and chart nodes this one
+        # does not have, so the store goes with the model.
+        RUNS.clear()
     return jsonify(WORKSPACE.graph_payload())
 
 
@@ -207,7 +256,29 @@ def new_model():
                             "timestep": 1},
             "nodes": [], "edges": [], "parameters": {}, "recorders": {},
         }, {}, dirty=True)
+        RUNS.clear()
     return jsonify(WORKSPACE.graph_payload())
+
+
+@bp.post("/api/close")
+def close_model():
+    """Back to the empty state, so a .tcm (or anything else) can be opened as
+    a model in its own right again."""
+    with WORKSPACE.lock:
+        WORKSPACE.reset()
+        RUNS.clear()
+    return jsonify({"ok": True})
+
+
+@bp.get("/api/path/exists")
+def path_exists():
+    """Does this file already exist? Save As asks before it overwrites."""
+    path = (request.args.get("path") or "").strip()
+    path = os.path.abspath(os.path.expanduser(path)) if path else ""
+    if path and not path.lower().endswith(".json"):
+        path += ".json"
+    return jsonify({"ok": True, "path": path,
+                    "exists": bool(path) and os.path.isfile(path)})
 
 
 @bp.get("/api/graph")
@@ -331,12 +402,52 @@ def replace_raw_model():
             positions = layout_mod.layout_missing(
                 names, model.get("edges", []), positions)
         # an in-place edit: keep the current path and data-file search
+        WORKSPACE.push_undo("JSON edit")
         WORKSPACE.model = model
         WORKSPACE.positions = normalize_positions(positions)
         WORKSPACE.dirty = True
         WORKSPACE.warnings = notes
         WORKSPACE.resolve_data()
     return jsonify(WORKSPACE.graph_payload())
+
+
+def _rehome_data(old_path, new_path):
+    """Keep the model's data files findable after Save As.
+
+    Data files are resolved *relative to the model's folder*, so writing the
+    model somewhere else silently changes where they are looked for. Left
+    alone, the Model tab would go on reporting files it had located against the
+    folder the model no longer lives in — and the saved copy would open with
+    them missing.
+
+    Re-resolves against the new home, and when that loses a file, adds the old
+    folder to the search path so the session keeps working. Returns a note to
+    show the user, or None when nothing moved out from under the model."""
+    before = {r["basename"]: r["resolved"]
+              for r in (WORKSPACE.data or {}).get("report", [])}
+    WORKSPACE.resolve_data()
+    if not before:
+        return None
+    lost = [b for b in (WORKSPACE.data or {}).get("missing", []) if before.get(b)]
+    if not lost:
+        return None
+    old_dir = os.path.dirname(os.path.abspath(old_path)) if old_path else None
+    new_dir = os.path.dirname(os.path.abspath(new_path))
+    if old_dir and old_dir != new_dir and old_dir not in WORKSPACE.data_dirs:
+        WORKSPACE.data_dirs.append(old_dir)
+        WORKSPACE.resolve_data()
+    shown = ", ".join(lost[:3]) + (f" and {len(lost) - 3} more"
+                                   if len(lost) > 3 else "")
+    one = len(lost) == 1
+    does = "does not" if one else "do not"
+    them, they = ("it", "it is") if one else ("them", "they are")
+    still_missing = [b for b in (WORKSPACE.data or {}).get("missing", [])
+                     if before.get(b)]
+    if still_missing:
+        return (f"{shown} {does} sit beside the saved copy and could not be "
+                f"found from it — the copy will not run until {they} added.")
+    return (f"{shown} {does} sit beside the saved copy — still being read from "
+            f"{old_dir}. Copy {them} next to the model to make it portable.")
 
 
 @bp.post("/api/save")
@@ -350,9 +461,13 @@ def save_model():
         if not path.lower().endswith(".json"):
             path += ".json"
         with WORKSPACE.lock:
+            old_path = WORKSPACE.path
             model_io.save_pywr_json(WORKSPACE.model, WORKSPACE.positions, path)
             WORKSPACE.path, WORKSPACE.dirty = path, False
-        return jsonify({"ok": True, "path": path})
+            note = (None if os.path.abspath(old_path or "") == os.path.abspath(path)
+                    else _rehome_data(old_path, path))
+        return jsonify({"ok": True, "path": path, "data_note": note,
+                        "data": WORKSPACE.data_payload()})
     except (ValueError, OSError) as exc:
         return err(exc)
 

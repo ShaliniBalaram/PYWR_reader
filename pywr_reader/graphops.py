@@ -115,32 +115,58 @@ def rewrite_node_refs(model, old, new):
     return notes
 
 
+SINGLE_NODE_REF_KEYS = ("node", "storage_node", "storage",
+                        "first_node", "second_node")
+LIST_NODE_REF_KEYS = ("nodes", "storage_nodes")
+
+
+def _visit_node_refs(model, name, new=None):
+    """Every place a node `name` is referenced from outside the node list —
+    aggregated nodes, parameters, recorders — as readable paths. Passing `new`
+    rewrites them in place as it goes.
+
+    The node's own "name" is never a reference to itself, and neither is any
+    other LITERAL_KEYS value, so both are skipped."""
+    hits = []
+
+    def visit(obj, path):
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                if isinstance(val, str) and val == name and key in SINGLE_NODE_REF_KEYS:
+                    hits.append(f"{path}.{key}")
+                    if new is not None:
+                        obj[key] = new
+                elif key in LIST_NODE_REF_KEYS and isinstance(val, list):
+                    for i, item in enumerate(val):
+                        if item == name:
+                            hits.append(f"{path}.{key}[{i}]")
+                            if new is not None:
+                                val[i] = new
+                else:
+                    visit(val, f"{path}.{key}")
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                visit(item, f"{path}[{i}]")
+
+    for section in ("nodes", "parameters", "recorders"):
+        visit(model.get(section), section)
+    return hits
+
+
+def find_node_refs(model, name):
+    """Where a node is referenced from: its edges first, then aggregated
+    nodes, parameters and recorders. Readable paths, in the order a reader
+    would want them — what a delete is about to strand."""
+    hits = [f"edges[{i}]" for i, edge in enumerate(model.get("edges", []))
+            if name in edge[:2]]
+    return hits + _visit_node_refs(model, name)
+
+
 def _rewrite_references(model, old, new):
     """Rewrite exact-string references to a node name in nodes/parameters/
     recorders sections. Returns a list of human-readable notes."""
-    notes = []
-
-    def rewrite(obj, path):
-        if isinstance(obj, dict):
-            for key, val in obj.items():
-                if isinstance(val, str) and val == old and key in (
-                        "node", "storage_node", "storage", "first_node", "second_node"):
-                    obj[key] = new
-                    notes.append(f"updated reference at {path}.{key}")
-                elif key in ("nodes", "storage_nodes") and isinstance(val, list):
-                    for i, item in enumerate(val):
-                        if item == old:
-                            val[i] = new
-                            notes.append(f"updated reference at {path}.{key}[{i}]")
-                else:
-                    rewrite(val, f"{path}.{key}")
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                rewrite(item, f"{path}[{i}]")
-
-    for section in ("nodes", "parameters", "recorders"):
-        rewrite(model.get(section), section)
-    return notes
+    return [f"updated reference at {path}"
+            for path in _visit_node_refs(model, old, new=new)]
 
 
 # ---------------------------------------------------------------------------
@@ -366,24 +392,39 @@ def dangling_references(model):
 
 
 def delete_node(model, name):
-    """Remove a node and all its edges. Returns warnings about leftover
-    references elsewhere in the model (aggregated nodes, recorders, ...)."""
+    """Remove a node and all its edges. Returns warnings naming what still
+    points at it — aggregated nodes, parameters, recorders. The delete goes
+    through either way; this is a warning, not a veto.
+
+    The references are read before anything is removed: afterwards the node's
+    own edges are gone, and what is left would under-report the damage."""
     nodes = model.get("nodes", [])
-    before = len(nodes)
-    model["nodes"] = [n for n in nodes if n.get("name") != name]
-    if len(model["nodes"]) == before:
+    if not any(n.get("name") == name for n in nodes):
         raise ValueError(f"no node named {name!r}")
+    # only what survives the delete counts as stranded, so drop this node's
+    # own edges from the list before reporting
+    refs = [r for r in find_node_refs(model, name) if not r.startswith("edges[")]
+    model["nodes"] = [n for n in nodes if n.get("name") != name]
     model["edges"] = [e for e in model.get("edges", [])
                       if name not in e[:2]]
 
-    warnings = []
-    blob = json.dumps({k: v for k, v in model.items() if k != "edges"})
-    if f'"{name}"' in blob:
-        warnings.append(
-            f"{name!r} is still referenced elsewhere in the model "
-            "(aggregated node, parameter or recorder) — the model may not run "
-            "until those references are removed.")
-    return warnings
+    if refs:
+        shown = ", ".join(refs[:4])
+        if len(refs) > 4:
+            shown += f" and {len(refs) - 4} more"
+        return [f"{name!r} is still referenced by {len(refs)} "
+                f"{'thing' if len(refs) == 1 else 'things'} ({shown}) — the "
+                "model will not run until those are removed or repointed."]
+    # The walk above only knows the reference keys pywr documents. A custom
+    # node or recorder can name a node at a key it has never heard of, so fall
+    # back to looking for the name anywhere at all. Vaguer, but the alternative
+    # is saying nothing about a model that will not run.
+    if f'"{name}"' in json.dumps({k: v for k, v in model.items()
+                                  if k != "edges"}):
+        return [f"{name!r} still appears elsewhere in the model, at a key this "
+                "app does not recognise as a reference — check it by hand "
+                "before running."]
+    return []
 
 
 def add_edge(model, src, dst):

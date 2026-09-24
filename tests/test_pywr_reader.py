@@ -24,6 +24,7 @@ from pywr_reader import (  # noqa: E402
     layout,
     model_io,  # noqa: E402
     runner,  # noqa: E402
+    session,  # noqa: E402
 )
 
 
@@ -125,7 +126,7 @@ class TestLoaders(unittest.TestCase):
         path = os.path.join(self.tmp, "plain.tcm")
         with open(path, "w") as fh:
             json.dump(tcm, fh)
-        pos, src, _ = model_io.load_tcm(path)
+        pos, src, _, _view = model_io.load_tcm(path)
         self.assertEqual(pos["a"], [1.0, 2.0])
 
     def test_load_csv_pair(self):
@@ -153,6 +154,134 @@ class TestLoaders(unittest.TestCase):
             again = json.load(fh)
         self.assertIn("tables", again)
         self.assertEqual(again["nodes"][0]["position"]["schematic"], [1.0, 2.0])
+
+
+class TestTcmViewState(unittest.TestCase):
+    """The presentation state a .tcm carries beside its node positions."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self.tmpdir.name
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def _tcm(self, core_extra, gzipped=True):
+        core = {"components": {"node_meta": {
+            "a": {"position": {"User": {"x": 1, "y": 2}}}}}}
+        core["components"].update(core_extra.pop("components", {}))
+        core.update(core_extra)
+        path = os.path.join(self.tmp, "v.tcm")
+        blob = json.dumps({"core": core}).encode()
+        with open(path, "wb") as fh:
+            fh.write(gzip.compress(blob) if gzipped else blob)
+        return path
+
+    def test_style_sheet_becomes_hex_with_alpha(self):
+        path = self._tcm({"components": {"style_sheet": {"nodes": {
+            "Input": {"color": [55, 126, 184, 255], "radius": 5.0,
+                      "edge_color": [160, 160, 160, 255]},
+            "Other": {"color": [10, 97, 165, 128]}}}}})
+        _, _, _, view = model_io.load_tcm(path)
+        self.assertEqual(view["styles"]["Input"]["color"], "#377eb8")
+        self.assertEqual(view["styles"]["Input"]["edge_color"], "#a0a0a0")
+        self.assertEqual(view["styles"]["Input"]["radius"], 5.0)
+        self.assertEqual(view["styles"]["Input"]["opacity"], 1.0)
+        self.assertAlmostEqual(view["styles"]["Other"]["opacity"], 128 / 255)
+
+    def test_style_sheet_fills_in_the_categories_it_does_not_name(self):
+        # sheets name five categories; label toggles name eight
+        path = self._tcm({"components": {"style_sheet": {"nodes": {
+            "Link": {"color": [1, 2, 3, 255]},
+            "Other": {"color": [4, 5, 6, 255]}}}}})
+        _, _, _, view = model_io.load_tcm(path)
+        self.assertEqual(view["styles"]["Gauge"]["color"], "#010203")
+        self.assertEqual(view["styles"]["Virtual"]["color"], "#040506")
+        self.assertEqual(view["styles"]["Aggregated"]["color"], "#040506")
+
+    def test_label_toggles_and_node_filters(self):
+        path = self._tcm({"settings": {"nodes": {
+            "show_virtual": False, "show_aggregated": True,
+            "labels": {"show_all_labels": False, "show_storage_labels": True,
+                       "show_link_labels": False, "text_size": 14.0}}}})
+        _, _, _, view = model_io.load_tcm(path)
+        self.assertFalse(view["show_virtual"])
+        self.assertTrue(view["show_aggregated"])
+        self.assertFalse(view["labels"]["all"])
+        self.assertTrue(view["labels"]["categories"]["Storage"])
+        self.assertFalse(view["labels"]["categories"]["Link"])
+        self.assertNotIn("Output", view["labels"]["categories"])
+        self.assertEqual(view["labels"]["text_size"], 14.0)
+
+    def test_viewport_is_origin_and_scale(self):
+        path = self._tcm({"view_port": {"origin": {"x": -79.25, "y": -281.5},
+                                        "scale": 1.617}})
+        _, _, _, view = model_io.load_tcm(path)
+        self.assertEqual(view["viewport"]["origin"], [-79.25, -281.5])
+        self.assertEqual(view["viewport"]["scale"], 1.617)
+
+    def test_a_file_with_no_view_state_yields_nothing(self):
+        path = self._tcm({})
+        _, _, _, view = model_io.load_tcm(path)
+        self.assertEqual(view, {})
+
+    def test_malformed_sections_are_skipped_not_fatal(self):
+        path = self._tcm({
+            "view_port": {"origin": {"x": "nope"}, "scale": 0},
+            "components": {"style_sheet": {"nodes": {
+                "Input": {"color": ["x", "y", "z"], "radius": "big"},
+                "Link": "not-a-dict"}}}})
+        _, _, _, view = model_io.load_tcm(path)
+        self.assertNotIn("viewport", view)
+        self.assertNotIn("styles", view)
+
+    def test_view_rides_along_with_load_any(self):
+        self._write_model()
+        tcm = {"core": {
+            "source": {"V1": {"Path": "C:\\x\\model.json"}},
+            "components": {
+                "node_meta": {"src": {"position": {"User": {"x": 5, "y": 6}}}},
+                "style_sheet": {"nodes": {"Input": {"color": [1, 2, 3, 255]}}}},
+            "view_port": {"origin": {"x": 0, "y": 0}, "scale": 2.0}}}
+        path = os.path.join(self.tmp, "view.tcm")
+        with open(path, "wb") as fh:
+            fh.write(gzip.compress(json.dumps(tcm).encode()))
+        loaded = model_io.load_any(path)
+        self.assertEqual(loaded["view"]["styles"]["Input"]["color"], "#010203")
+        self.assertEqual(loaded["view"]["viewport"]["scale"], 2.0)
+
+    def _write_model(self):
+        with open(os.path.join(self.tmp, "model.json"), "w") as fh:
+            json.dump(tiny_model(), fh)
+
+
+class TestNormalizeTransform(unittest.TestCase):
+    """The camera has to survive the same rescale the positions go through."""
+
+    def test_transform_matches_what_normalize_positions_did(self):
+        positions = {f"n{i}": [i * 3.0, i * 4.0] for i in range(12)}
+        transform = session.normalize_transform(positions)
+        normalized = session.normalize_positions(positions)
+        for name, xy in positions.items():
+            moved = session.apply_normalize_transform(xy, transform)
+            self.assertAlmostEqual(moved[0], normalized[name][0])
+            self.assertAlmostEqual(moved[1], normalized[name][1])
+
+    def test_well_scaled_positions_are_left_alone(self):
+        positions = {f"n{i}": [i * 120.0, 0.0] for i in range(10)}
+        self.assertEqual(session.normalize_transform(positions), (1.0, 0.0, 0.0))
+        self.assertIs(session.normalize_positions(positions), positions)
+
+    def test_camera_keeps_its_place_relative_to_the_nodes(self):
+        # a point at the centre of the node cloud must stay at the centre
+        positions = {f"n{i}": [i * 2.0, i * 2.0] for i in range(20)}
+        transform = session.normalize_transform(positions)
+        normalized = session.normalize_positions(positions)
+        centre = [sum(p[0] for p in positions.values()) / 20,
+                  sum(p[1] for p in positions.values()) / 20]
+        moved = session.apply_normalize_transform(centre, transform)
+        new_centre = [sum(p[0] for p in normalized.values()) / 20,
+                      sum(p[1] for p in normalized.values()) / 20]
+        self.assertAlmostEqual(moved[0], new_centre[0])
+        self.assertAlmostEqual(moved[1], new_centre[1])
 
 
 class TestLayout(unittest.TestCase):
@@ -608,6 +737,145 @@ class TestDeleteDefinition(unittest.TestCase):
         model = wired_model()
         graphops.delete_definition(model, "parameters", "DC_max_flow")
         self.assertNotIn("DC_max_flow", model["parameters"])
+
+
+class TestNodeRefs(unittest.TestCase):
+    """Where a node is referenced from, and what a delete therefore strands.
+
+    Deleting a node used to report only "still referenced elsewhere" — true, but
+    not actionable. The paths are what make it a decision."""
+
+    def _model(self):
+        return {
+            "nodes": [
+                {"name": "DC", "type": "output", "max_flow": "DC_max_flow"},
+                {"name": "Src", "type": "input"},
+                {"name": "Both", "type": "aggregatednode",
+                 "nodes": ["DC", "Src"]},
+            ],
+            "edges": [["Src", "DC"], ["DC", "Src"]],
+            "parameters": {"DC_max_flow": {"type": "constant", "value": 1}},
+            "recorders": {"DC_flow": {"type": "NumpyArrayNodeRecorder",
+                                      "node": "DC"}},
+        }
+
+    def test_finds_edges_and_every_other_kind_of_reference(self):
+        refs = graphops.find_node_refs(self._model(), "DC")
+        self.assertEqual(refs, ["edges[0]", "edges[1]",
+                                "nodes[2].nodes[0]", "recorders.DC_flow.node"])
+
+    def test_a_nodes_own_name_is_not_a_reference_to_itself(self):
+        refs = graphops.find_node_refs(self._model(), "Src")
+        self.assertNotIn("nodes[1].name", refs)
+
+    def test_an_unreferenced_node_has_none(self):
+        model = self._model()
+        model["nodes"].append({"name": "Lonely", "type": "link"})
+        self.assertEqual(graphops.find_node_refs(model, "Lonely"), [])
+
+    def test_delete_names_what_it_strands_and_not_its_own_edges(self):
+        model = self._model()
+        warnings = graphops.delete_node(model, "DC")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("nodes[2].nodes[0]", warnings[0])
+        self.assertIn("recorders.DC_flow.node", warnings[0])
+        # its own edges go with it, so they are not left dangling
+        self.assertNotIn("edges[", warnings[0])
+        self.assertEqual(model["edges"], [])
+
+    def test_a_reference_at_an_unknown_key_is_still_flagged(self):
+        """A custom recorder can name a node at a key pywr never documents —
+        vaguer than a path, but better than reporting a broken model clean."""
+        model = self._model()
+        model["nodes"].append({"name": "Lonely", "type": "link"})
+        model["recorders"]["odd"] = {"type": "CustomThing",
+                                     "target_node": "Lonely"}
+        warnings = graphops.delete_node(model, "Lonely")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("does not recognise as a reference", warnings[0])
+
+    def test_delete_of_an_unreferenced_node_is_quiet(self):
+        model = self._model()
+        model["nodes"].append({"name": "Lonely", "type": "link"})
+        self.assertEqual(graphops.delete_node(model, "Lonely"), [])
+
+    def test_delete_still_refuses_a_name_that_is_not_there(self):
+        with self.assertRaises(ValueError):
+            graphops.delete_node(self._model(), "Nope")
+
+    def test_rename_still_rewrites_the_same_places(self):
+        # find and rewrite share one walker now — a rename must be unchanged
+        model = self._model()
+        graphops.rename_node(model, "DC", "Sink")
+        self.assertEqual(model["edges"], [["Src", "Sink"], ["Sink", "Src"]])
+        self.assertEqual(model["nodes"][2]["nodes"], ["Sink", "Src"])
+        self.assertEqual(model["recorders"]["DC_flow"]["node"], "Sink")
+
+
+class TestUndoStack(unittest.TestCase):
+    """The Workspace remembers the model before each edit, so any edit can be
+    taken back — not only a layout, and more than one deep."""
+
+    def _ws(self):
+        ws = session.Workspace()
+        ws.load({"nodes": [{"name": "A", "type": "link"}], "edges": []},
+                {"A": [0, 0]})
+        return ws
+
+    def test_pop_restores_the_model_and_the_positions(self):
+        ws = self._ws()
+        ws.push_undo("add node")
+        ws.model["nodes"].append({"name": "B", "type": "link"})
+        ws.positions["B"] = [10, 10]
+        self.assertEqual(ws.pop_undo(), "add node")
+        self.assertEqual([n["name"] for n in ws.model["nodes"]], ["A"])
+        self.assertNotIn("B", ws.positions)
+
+    def test_a_snapshot_is_a_copy_not_a_view(self):
+        ws = self._ws()
+        ws.push_undo("edit A")
+        ws.model["nodes"][0]["max_flow"] = 5
+        ws.pop_undo()
+        self.assertNotIn("max_flow", ws.model["nodes"][0])
+
+    def test_the_stack_is_bounded(self):
+        ws = self._ws()
+        for i in range(ws.UNDO_DEPTH + 10):
+            ws.push_undo(f"edit {i}")
+        self.assertEqual(len(ws.undo), ws.UNDO_DEPTH)
+        # the oldest are dropped, so the newest is still on top
+        self.assertEqual(ws.undo_label(), f"edit {ws.UNDO_DEPTH + 9}")
+
+    def test_nothing_to_undo_is_an_error_not_a_crash(self):
+        ws = self._ws()
+        self.assertIsNone(ws.undo_label())
+        with self.assertRaises(ValueError):
+            ws.pop_undo()
+
+    def test_opening_another_model_empties_the_stack(self):
+        ws = self._ws()
+        ws.push_undo("edit A")
+        ws.load({"nodes": [], "edges": []}, {})
+        self.assertIsNone(ws.undo_label())
+
+    def test_push_with_no_model_open_does_nothing(self):
+        ws = session.Workspace()
+        ws.push_undo("nothing")
+        self.assertEqual(ws.undo, [])
+
+
+class TestRunStoreLifecycle(unittest.TestCase):
+    def test_clear_keeps_reserving_a_run_that_is_still_solving(self):
+        """A run's temp snapshot sits beside the model and the worker is still
+        reading it, so clearing the list must not make it sweepable."""
+        store = session.RunStore()
+        store.add({"id": "live", "status": "running"})
+        store.add({"id": "old", "status": "done"})
+        store.clear()
+        self.assertEqual(len(store), 0)
+        self.assertEqual(store.live_ids(), {"live"})
+        store.release("live")
+        self.assertEqual(store.live_ids(), set())
 
 
 class TestDanglingReferences(unittest.TestCase):

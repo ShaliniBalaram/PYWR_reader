@@ -30,6 +30,7 @@ def relayout():
     if mode != "missing" and kind not in layout_mod.LAYOUT_KINDS:
         return err(f"unknown layout {kind!r}")
     with WORKSPACE.lock:
+        WORKSPACE.push_undo("layout" if mode != "missing" else "layout of new nodes")
         model = WORKSPACE.model
         names = [n["name"] for n in model.get("nodes", [])]
         if mode == "missing":
@@ -46,6 +47,24 @@ def relayout():
     return jsonify(WORKSPACE.graph_payload())
 
 
+@bp.post("/api/undo")
+def undo():
+    """Take back the last edit — any edit, not just a layout.
+
+    One snapshot per API call is also one per user action: the canvas posts a
+    drag once on mouseup, and the multi-part edits (a recorder bundle, a JSON
+    Apply) are single calls by construction."""
+    try:
+        WORKSPACE.require_model()
+        with WORKSPACE.lock:
+            label = WORKSPACE.pop_undo()
+    except ValueError as exc:
+        return err(exc)
+    payload = WORKSPACE.graph_payload()
+    payload["undone"] = label
+    return jsonify(payload)
+
+
 @bp.post("/api/positions")
 def set_positions():
     body = request.get_json(force=True)
@@ -53,12 +72,16 @@ def set_positions():
         WORKSPACE.require_model()
     except ValueError as exc:
         return err(exc)
+    moved = body.get("positions") or {}
     with WORKSPACE.lock:
-        for name, xy in (body.get("positions") or {}).items():
+        # one snapshot per drag, not per pixel: the canvas posts once on mouseup
+        WORKSPACE.push_undo("move " + (next(iter(moved)) if len(moved) == 1
+                                       else f"{len(moved)} nodes"))
+        for name, xy in moved.items():
             if isinstance(xy, (list, tuple)) and len(xy) >= 2:
                 WORKSPACE.positions[name] = [float(xy[0]), float(xy[1])]
         WORKSPACE.dirty = True
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "undo_label": WORKSPACE.undo_label()})
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +93,7 @@ def node_add():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo("add node")
             node = graphops.add_node(WORKSPACE.model, body.get("node") or {})
             pos = body.get("pos")
             if isinstance(pos, (list, tuple)) and len(pos) >= 2:
@@ -86,6 +110,7 @@ def node_update():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo(f"edit {body.get('name')}")
             graphops.update_node(WORKSPACE.model, body.get("name"),
                                  body.get("changes"), body.get("removals"))
             new_type = (body.get("changes") or {}).get("type")
@@ -103,6 +128,7 @@ def node_rename():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo(f"rename {body.get('old')}")
             notes = graphops.rename_node(WORKSPACE.model, body.get("old"),
                                          body.get("new"))
             if body.get("old") in WORKSPACE.positions:
@@ -121,6 +147,7 @@ def node_delete():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo(f"delete {body.get('name')}")
             warnings = graphops.delete_node(WORKSPACE.model, body.get("name"))
             WORKSPACE.positions.pop(body.get("name"), None)
             WORKSPACE.dirty = True
@@ -142,6 +169,7 @@ def definition_rename():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo(f"rename {body.get('old')}")
             notes = graphops.rename_definition(
                 WORKSPACE.model, body.get("section"), body.get("old"),
                 body.get("new"))
@@ -189,6 +217,8 @@ def definition_add():
             if node_changes:
                 graphops.update_node(staged, node_changes.get("name"),
                                      node_changes.get("changes"))
+            WORKSPACE.push_undo("add " + (", ".join(added) if len(added) == 1
+                                          else f"{len(added)} definitions"))
             WORKSPACE.model = staged
             WORKSPACE.dirty = True
     except ValueError as exc:
@@ -206,6 +236,7 @@ def definition_delete():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo(f"delete {body.get('name')}")
             warnings = graphops.delete_definition(
                 WORKSPACE.model, body.get("section"), body.get("name"))
             WORKSPACE.dirty = True
@@ -214,6 +245,24 @@ def definition_delete():
     payload = WORKSPACE.graph_payload()
     payload["delete_warnings"] = warnings
     return jsonify(payload)
+
+
+@bp.get("/api/node/refs")
+def node_refs():
+    """Where a node is referenced from — its edges, and anything else in the
+    model that names it. The delete confirmation asks first, so it can say
+    what the delete is about to strand instead of reporting it afterwards."""
+    name = request.args.get("name")
+    try:
+        WORKSPACE.require_model()
+        if graphops.node_by_name(WORKSPACE.model, name) is None:
+            raise ValueError(f"no node named {name!r}")
+    except ValueError as exc:
+        return err(exc)
+    refs = graphops.find_node_refs(WORKSPACE.model, name)
+    edges = [r for r in refs if r.startswith("edges[")]
+    return jsonify({"ok": True, "refs": refs, "n_edges": len(edges),
+                    "stranded": [r for r in refs if not r.startswith("edges[")]})
 
 
 @bp.get("/api/definition/refs")
@@ -237,6 +286,7 @@ def edge_add():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo("add edge")
             graphops.add_edge(WORKSPACE.model, body.get("src"), body.get("dst"))
             WORKSPACE.dirty = True
     except ValueError as exc:
@@ -250,6 +300,7 @@ def edge_delete():
     try:
         WORKSPACE.require_model()
         with WORKSPACE.lock:
+            WORKSPACE.push_undo("delete edge")
             graphops.delete_edge(WORKSPACE.model, body.get("src"), body.get("dst"))
             WORKSPACE.dirty = True
     except ValueError as exc:

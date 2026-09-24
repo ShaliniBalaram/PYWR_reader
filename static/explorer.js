@@ -2,7 +2,7 @@
    three levels (whole model / a section / one entry, plus a node). */
 
 import { api } from "./api.js";
-import { $, el, openModal, closeModal, toast } from "./dom.js";
+import { $, el, openModal, closeModal, toast, ask } from "./dom.js";
 import { FORMS } from "./catalog.js";
 // selectNode/updateGraph are canvas-core functions in app.js. app.js also
 // imports openModelExplorer from here, so this is a deliberate cycle — safe
@@ -118,6 +118,9 @@ export async function openModelExplorer() {
   const filter = el("input", { class: "explorer-filter", type: "text",
     placeholder: "Filter by name / type…",
     oninput: () => renderBody() });
+  const filterCount = el("span", { class: "muted small explorer-count" });
+  const filterRow = el("div", { class: "row gap explorer-filter-row" },
+    filter, filterCount);
   const bodyEl = el("div", { class: "explorer-body" });
   const nav = el("div", { class: "explorer-nav" });
 
@@ -127,11 +130,14 @@ export async function openModelExplorer() {
   function showExplorer() {
     openModal(
       el("h3", {}, (raw.metadata && raw.metadata.title) || "Model"),
-      nav, filter, bodyEl,
+      nav, filterRow, bodyEl,
       el("div", { class: "row gap", style: "margin-top:10px; justify-content:flex-end" },
         el("button", { onclick: closeModal }, "Close")),
     );
     $("modal").classList.add("explorer");
+    // ready to type, like every other search box in the app
+    filter.focus();
+    filter.select();
   }
 
   function keyScalars(obj) {
@@ -183,13 +189,17 @@ export async function openModelExplorer() {
   }
   /** How many places refer to an entry — asked before renaming or deleting so
    *  the dialog can say what is at stake rather than guessing. */
-  async function refCount(section, name) {
+  async function refList(section, name) {
     try {
       const res = await api(
         `/api/definition/refs?section=${encodeURIComponent(section)}`
         + `&name=${encodeURIComponent(name)}`);
-      return (res.refs || []).length;
+      return res.refs || [];
     } catch { return null; }
+  }
+  async function refCount(section, name) {
+    const refs = await refList(section, name);
+    return refs == null ? null : refs.length;
   }
   const places = n =>
     n == null ? "" : `${n} ${n === 1 ? "place refers" : "places refer"} to it`;
@@ -231,12 +241,23 @@ export async function openModelExplorer() {
   }
 
   async function deleteEntry(section, name) {
-    const used = await refCount(section, name);
-    const warning = !used ? ""
-      : `\n\n${used} other ${used === 1 ? "place refers" : "places refer"} to it`
-        + ` — ${used === 1 ? "it" : "they"} will point at a name the model no `
-        + "longer defines.";
-    if (!confirm(`Remove ${section.replace(/s$/, "")} “${name}”?${warning}`)) return;
+    const refs = (await refList(section, name)) || [];
+    const kind = section.replace(/s$/, "");
+    // the app's own dialog rather than the browser's: it can list the exact
+    // references, which is the difference between a decision and a coin toss
+    const go = await ask({
+      title: `Remove ${kind} “${name}”?`,
+      message: refs.length
+        ? `${refs.length} other ${refs.length === 1 ? "place refers" : "places refer"}`
+          + ` to it, and will point at a name the model no longer defines:`
+        : "Nothing else in the model refers to it.",
+      items: refs,
+      buttons: [{ label: "Cancel", value: null },
+                { label: "Remove", value: true, kind: "danger" }],
+    });
+    // ask() took the modal over; hand it back either way
+    showExplorer();
+    if (!go) return;
     try {
       const payload = await api("/api/definition/delete", { section, name });
       updateGraph(payload);
@@ -354,7 +375,7 @@ export async function openModelExplorer() {
   const hit = (...s) => { const t = q(); return !t || s.join(" ").toLowerCase().includes(t); };
 
   function renderBody() {
-    let content;
+    let content, shown = null, total = null;
     if (active === "Overview") {
       const m = raw.metadata || {}, ts = raw.timestepper || {};
       content = el("table", { class: "grid" },
@@ -370,6 +391,8 @@ export async function openModelExplorer() {
           .map(([k, v]) => el("tr", {}, el("td", { class: "k" }, k),
             el("td", {}, String(v)))));
     } else if (active === "Nodes") {
+      shown = nodes.filter(n => hit(n.name, n.type)).length;
+      total = nodes.length;
       const rows = nodes.filter(n => hit(n.name, n.type))
         .map(n => el("tr", { class: "clickable",
           onclick: () => { closeModal(); selectNode(n.name); } },
@@ -386,6 +409,8 @@ export async function openModelExplorer() {
           el("th", {})),
         ...rows) : emptyMsg();
     } else if (active === "Edges") {
+      shown = edges.filter(e => hit(e[0], e[1])).length;
+      total = edges.length;
       const rows = edges.filter(e => hit(e[0], e[1]))
         .map(e => el("tr", {}, el("td", {}, e[0]), el("td", {}, "→"),
           el("td", {}, e[1]),
@@ -394,25 +419,38 @@ export async function openModelExplorer() {
         el("tr", {}, el("th", {}, "Source"), el("th", {}), el("th", {}, "Destination"),
           el("th", {}, "Slot")), ...rows) : emptyMsg();
     } else if (active === "Parameters") {
-      const rows = Object.entries(params)
-        .filter(([n, d]) => hit(n, (d && d.type) || ""))
+      const entries = Object.entries(params)
+        .filter(([n, d]) => hit(n, (d && d.type) || ""));
+      shown = entries.length;
+      total = Object.keys(params).length;
+      const rows = entries
         .map(([n, d]) => detailRow(n, d, rowActions("parameters", n, d)));
       content = el("div", {}, sectionBar("parameters", params),
         rows.length ? el("div", {}, ...rows) : emptyMsg());
     } else if (active === "Tables") {
-      const rows = Object.entries(tables)
-        .filter(([n, d]) => hit(n, (d && d.url) || ""))
+      const entries = Object.entries(tables)
+        .filter(([n, d]) => hit(n, (d && d.url) || ""));
+      shown = entries.length;
+      total = Object.keys(tables).length;
+      const rows = entries
         .map(([n, d]) => detailRow(n, d, rowActions("tables", n, d)));
       content = el("div", {}, sectionBar("tables", tables),
         rows.length ? el("div", {}, ...rows) : emptyMsg());
     } else if (active === "Recorders") {
-      const rows = Object.entries(recorders)
-        .filter(([n, d]) => hit(n, (d && d.type) || ""))
+      const entries = Object.entries(recorders)
+        .filter(([n, d]) => hit(n, (d && d.type) || ""));
+      shown = entries.length;
+      total = Object.keys(recorders).length;
+      const rows = entries
         .map(([n, d]) => detailRow(n, d, rowActions("recorders", n, d)));
       content = el("div", {}, sectionBar("recorders", recorders),
         rows.length ? el("div", {}, ...rows) : emptyMsg());
     }
     bodyEl.replaceChildren(content);
+    // "278 parameters" with nothing said about what the filter left is a
+    // guess; say how many of them are on screen
+    filterCount.textContent = total == null ? ""
+      : q() ? `${shown} of ${total}` : `${total}`;
   }
   function emptyMsg() {
     return el("div", { class: "explorer-empty" },

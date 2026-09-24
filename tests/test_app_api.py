@@ -899,6 +899,305 @@ class TestPackagedBuild(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(util.APP_DIR, "static")))
 
 
+class TestSessionLifecycle(unittest.TestCase):
+    """Runs, undo and the empty state — the session state that used to outlive
+    the model it described."""
+
+    def setUp(self):
+        app_module.app.testing = True
+        self.c = app_module.app.test_client()
+        app_module.WORKSPACE.reset()
+        app_module.RUNS.clear()
+        app_module.RUNS.abandoned.clear()
+
+    def _fake_done_run(self, run_id="r1"):
+        app_module.RUNS.add({"id": run_id, "status": "done", "label": "run 1",
+                             "dates": ["2000-01-01"],
+                             "nodes": {"GW_Base": {"flow": [1.0]}},
+                             "edges": [], "started_at": 0.0})
+
+    def test_opening_another_model_drops_the_previous_runs(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self._fake_done_run()
+        self.assertEqual(len(app_module.RUNS), 1)
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self.assertEqual(len(app_module.RUNS), 0)
+        self.assertEqual(self.c.get("/api/runs").get_json()["runs"], [])
+
+    def test_a_new_model_drops_the_previous_runs(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self._fake_done_run()
+        self.c.post("/api/new", json={"title": "Blank"})
+        self.assertEqual(len(app_module.RUNS), 0)
+
+    def test_close_goes_back_to_the_empty_state(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self._fake_done_run()
+        r = self.c.post("/api/close", json={})
+        self.assertTrue(r.get_json()["ok"])
+        self.assertIsNone(app_module.WORKSPACE.model)
+        self.assertEqual(len(app_module.RUNS), 0)
+        self.assertEqual(self.c.get("/api/graph").status_code, 400)
+
+    def test_undo_takes_back_a_delete(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        before = len(self.c.get("/api/graph").get_json()["nodes"])
+        self.c.post("/api/node/delete", json={"name": "Reservoir_A"})
+        self.assertEqual(
+            len(self.c.get("/api/graph").get_json()["nodes"]), before - 1)
+        r = self.c.post("/api/undo", json={})
+        data = r.get_json()
+        self.assertEqual(data["undone"], "delete Reservoir_A")
+        self.assertEqual(len(data["nodes"]), before)
+        self.assertIn("Reservoir_A", [n["name"] for n in data["nodes"]])
+        # and the recorder that pointed at it is unbroken again
+        self.assertEqual(data["reference_warnings"], [])
+
+    def test_undo_takes_back_a_rename_and_its_reference_rewrites(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self.c.post("/api/node/rename",
+                    json={"old": "Reservoir_A", "new": "Res_B"})
+        self.c.post("/api/undo", json={})
+        model = app_module.WORKSPACE.model
+        self.assertEqual(model["recorders"]["Reservoir_volume"]["node"],
+                         "Reservoir_A")
+
+    def test_undo_is_more_than_one_deep(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        for name in ("Demand_Urban", "Demand_Irrigation"):
+            self.c.post("/api/node/delete", json={"name": name})
+        self.c.post("/api/undo", json={})
+        self.c.post("/api/undo", json={})
+        names = [n["name"] for n in self.c.get("/api/graph").get_json()["nodes"]]
+        self.assertIn("Demand_Urban", names)
+        self.assertIn("Demand_Irrigation", names)
+
+    def test_the_graph_says_what_undo_would_take_back(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self.assertIsNone(self.c.get("/api/graph").get_json()["undo_label"])
+        self.c.post("/api/edge/add",
+                    json={"src": "Reservoir_A", "dst": "River_Outlet"})
+        self.assertEqual(self.c.get("/api/graph").get_json()["undo_label"],
+                         "add edge")
+
+    def test_undo_with_nothing_to_undo_is_a_message_not_a_500(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        r = self.c.post("/api/undo", json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("undo", r.get_json()["error"])
+
+    def test_node_refs_separates_edges_from_what_a_delete_strands(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        data = self.c.get("/api/node/refs?name=Reservoir_A").get_json()
+        self.assertGreater(data["n_edges"], 0)
+        self.assertIn("recorders.Reservoir_volume.node", data["stranded"])
+        self.assertTrue(all(not r.startswith("edges[") for r in data["stranded"]))
+
+    def test_node_refs_on_an_unknown_node_is_an_error(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self.assertEqual(self.c.get("/api/node/refs?name=Nope").status_code, 400)
+
+
+class TestSaveAsRehomesData(unittest.TestCase):
+    """Data files are found relative to the model's folder, so Save As can cut
+    them loose without saying so."""
+
+    def setUp(self):
+        app_module.app.testing = True
+        self.c = app_module.app.test_client()
+        app_module.WORKSPACE.reset()
+        self.tmp = tempfile.TemporaryDirectory()
+        # dataresolve climbs two folders above the model and indexes what it
+        # finds, so "elsewhere" has to be out of that reach for the test to be
+        # about Save As rather than about the search being generous
+        self.home = os.path.join(self.tmp.name, "home")
+        self.away = os.path.join(self.tmp.name, "a", "b", "away")
+        os.makedirs(self.home)
+        os.makedirs(self.away)
+        self.model_path = os.path.join(self.home, "m.json")
+        with open(os.path.join(self.home, "inflow.csv"), "w") as fh:
+            fh.write("date,flow\n2000-01-01,1\n")
+        with open(self.model_path, "w") as fh:
+            json.dump({
+                "metadata": {"title": "t"},
+                "timestepper": {"start": "2000-01-01", "end": "2000-01-02",
+                                "timestep": 1},
+                "nodes": [{"name": "A", "type": "input",
+                           "position": {"schematic": [0, 0]}},
+                          {"name": "B", "type": "output",
+                           "position": {"schematic": [100, 0]}}],
+                "edges": [["A", "B"]],
+                "parameters": {"p": {"type": "dataframe",
+                                     "url": "inflow.csv"}},
+            }, fh)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_saving_beside_the_original_says_nothing(self):
+        self.c.post("/api/open", json={"path": self.model_path})
+        r = self.c.post("/api/save",
+                        json={"path": os.path.join(self.home, "copy.json")})
+        self.assertIsNone(r.get_json()["data_note"])
+        self.assertEqual(r.get_json()["data"]["missing"], [])
+
+    def test_saving_elsewhere_warns_and_keeps_the_file_findable(self):
+        self.c.post("/api/open", json={"path": self.model_path})
+        # it was located before the save
+        self.assertEqual(
+            self.c.get("/api/graph").get_json()["data"]["missing"], [])
+        r = self.c.post("/api/save",
+                        json={"path": os.path.join(self.away, "copy.json")})
+        note = r.get_json()["data_note"]
+        self.assertIsNotNone(note)
+        self.assertIn("inflow.csv", note)
+        # the old folder was added to the search path, so the session still runs
+        self.assertEqual(r.get_json()["data"]["missing"], [])
+        self.assertIn(self.home, app_module.WORKSPACE.data_dirs)
+        # and the Model tab now agrees with reality
+        self.assertEqual(
+            self.c.get("/api/graph").get_json()["data"]["missing"], [])
+
+    def test_plain_save_over_the_same_path_does_not_touch_the_search(self):
+        self.c.post("/api/open", json={"path": self.model_path})
+        r = self.c.post("/api/save", json={})
+        self.assertIsNone(r.get_json()["data_note"])
+        self.assertEqual(app_module.WORKSPACE.data_dirs, [])
+
+    def test_path_exists_answers_before_save_as_overwrites(self):
+        self.assertFalse(
+            self.c.get("/api/path/exists?path="
+                       + os.path.join(self.away, "nope.json")).get_json()["exists"])
+        self.assertTrue(
+            self.c.get("/api/path/exists?path=" + self.model_path).get_json()["exists"])
+        # the .json the save itself would append is taken into account
+        stem = self.model_path[: -len(".json")]
+        self.assertTrue(self.c.get("/api/path/exists?path=" + stem)
+                        .get_json()["exists"])
+
+
+class TestRunProgressAndHints(unittest.TestCase):
+    def setUp(self):
+        app_module.app.testing = True
+        self.c = app_module.app.test_client()
+        app_module.WORKSPACE.reset()
+        app_module.RUNS.clear()
+
+    def test_progress_is_read_from_the_file_the_runner_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.json")
+            run = {"id": "x", "status": "running", "progress_path": path}
+            self.assertIsNone(runs.read_progress(run))      # not written yet
+            with open(path, "w") as fh:
+                json.dump({"step": 120, "total": 29586}, fh)
+            self.assertEqual(runs.read_progress(run),
+                             {"step": 120, "total": 29586})
+
+    def test_a_half_written_progress_file_is_ignored_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.json")
+            with open(path, "w") as fh:
+                fh.write("{\"step\": 1")
+            self.assertIsNone(
+                runs.read_progress({"id": "x", "progress_path": path}))
+
+    def test_a_finished_run_reports_no_progress(self):
+        self.assertIsNone(runs.read_progress({"id": "x", "status": "done"}))
+
+    def test_a_keyerror_from_pywr_is_explained_in_the_apps_own_words(self):
+        model = {"nodes": [{"name": "DC", "type": "output"}], "edges": [],
+                 "recorders": {"Gauge_flow": {"type": "NumpyArrayNodeRecorder",
+                                              "node": "River_Gauge_A"}}}
+        hints = runs.failure_hints(model, "KeyError: 'River_Gauge_A'")
+        self.assertEqual(len(hints), 1)
+        self.assertIn("Gauge_flow", hints[0])
+        self.assertIn("River_Gauge_A", hints[0])
+
+    def test_a_clean_model_gets_no_hints(self):
+        model = {"nodes": [{"name": "DC", "type": "output"}], "edges": []}
+        self.assertEqual(runs.failure_hints(model, "SolverError: infeasible"), [])
+
+    def test_a_broken_model_is_still_flagged_for_an_unrelated_error(self):
+        model = {"nodes": [{"name": "DC", "type": "output",
+                            "max_flow": "missing_param"}], "edges": []}
+        hints = runs.failure_hints(model, "SolverError: infeasible")
+        self.assertEqual(len(hints), 1)
+        self.assertIn("Model tab", hints[0])
+
+    def test_the_status_endpoint_carries_progress_and_timing(self):
+        app_module.RUNS.add({"id": "q1", "status": "queued", "label": "run 1",
+                             "started_at": 100.0})
+        data = self.c.get("/api/run/q1").get_json()
+        self.assertEqual(data["started_at"], 100.0)
+        self.assertIsNone(data["progress"])
+        self.assertEqual(data["hints"], [])
+        listed = self.c.get("/api/runs").get_json()["runs"][0]
+        self.assertEqual(listed["started_at"], 100.0)
+
+
+class TestTcmAsModel(unittest.TestCase):
+    """A .tcm opened while a model is loaded is applied as positions. When
+    nothing in it matches, that used to be the end of the story."""
+
+    def setUp(self):
+        app_module.app.testing = True
+        self.c = app_module.app.test_client()
+        app_module.WORKSPACE.reset()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tcm = os.path.join(self.tmp.name, "other.tcm")
+        self._write_tcm({"Elsewhere_1": (0, 0), "Elsewhere_2": (100, 0)})
+        with open(os.path.join(self.tmp.name, "other.json"), "w") as fh:
+            json.dump({
+                "metadata": {"title": "other"},
+                "timestepper": {"start": "2000-01-01", "end": "2000-01-02",
+                                "timestep": 1},
+                "nodes": [{"name": "Elsewhere_1", "type": "input"},
+                          {"name": "Elsewhere_2", "type": "output"}],
+                "edges": [["Elsewhere_1", "Elsewhere_2"]],
+            }, fh)
+
+    def _write_tcm(self, nodes):
+        """A .tcm in the real shape: JSON, naming the model beside it."""
+        with open(self.tcm, "w") as fh:
+            json.dump({"core": {
+                "source": {"V1": {"Path": "C:\\elsewhere\\other.json"}},
+                "components": {"node_meta": {
+                    name: {"position": {"User": {"x": x, "y": y}}}
+                    for name, (x, y) in nodes.items()}},
+            }}, fh)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_tcm_that_matches_nothing_says_so(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        data = self.c.post("/api/open", json={"path": self.tcm}).get_json()
+        self.assertTrue(data["tcm_unmatched"])
+        # the open model is untouched
+        self.assertTrue(data["tcm_applied"])
+        self.assertEqual(data["path"], EXAMPLE)
+
+    def test_as_model_opens_the_tcm_itself_instead(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        data = self.c.post("/api/open",
+                           json={"path": self.tcm, "as_model": True}).get_json()
+        # a .tcm names the model it describes, so opening it "as a model"
+        # lands on that file — which is the point
+        self.assertEqual(data["path"],
+                         os.path.join(self.tmp.name, "other.json"))
+        self.assertEqual(sorted(n["name"] for n in data["nodes"]),
+                         ["Elsewhere_1", "Elsewhere_2"])
+        self.assertNotIn("tcm_applied", data)
+
+    def test_a_matching_tcm_still_applies_as_positions(self):
+        self.c.post("/api/open", json={"path": EXAMPLE})
+        self._write_tcm({"Reservoir_A": (10, 20), "Demand_Urban": (30, 40)})
+        data = self.c.post("/api/open", json={"path": self.tcm}).get_json()
+        self.assertFalse(data["tcm_unmatched"])
+        self.assertTrue(data["tcm_applied"])
+        self.assertEqual(data["path"], EXAMPLE)
+
+
 class TestDefinitionApi(unittest.TestCase):
     """Renaming and deleting parameters / recorders / tables over the API —
     the counterpart of /api/node/rename for the blocks nodes point at."""

@@ -26,8 +26,9 @@ constrains, where the water actually goes. This app answers those questions.
 | **Look at the data** | Opens the `.h5`, `.xlsx` and `.csv` files the model reads — as a table or a zoomable time-series plot. |
 | **Trace from a map** | Drop a map or schematic behind the canvas and build a model by clicking along the flow lines. |
 
-It reads **PyWR model JSON**, **`.tcm`** viewer files (for node positions), and
-Graph Overlay **`nodes.csv`** pairs.
+It reads **PyWR model JSON**, **`.tcm`** viewer files (node positions *and* the
+viewer's own colours, label settings and saved camera), and Graph Overlay
+**`nodes.csv`** pairs.
 
 Verified on a real 80-year, 29,586-timestep zone model of 162 nodes.
 
@@ -193,16 +194,32 @@ The only requirement is internet access the first time.
 Then:
 
 1. **▶ Run** executes the model; recorders are attached to every node
-   automatically.
+   automatically. The run reports its progress as it goes — percentage,
+   timesteps done, elapsed time and an estimate of what's left. (pywr has no
+   progress callback, so the runner counts timesteps through a recorder, which
+   is called once per step.)
 2. A **time slider** appears — edges are coloured and thickened by flow. Press
    **space** or ▶ to animate. Click a node and the flow value is drawn on each
    pipe along its path.
-3. The selected node's panel charts its flow or volume over time.
-4. **What-if:** press **Δ** beside any numeric parameter to stage a change, then
+3. **Getting to a date.** 29,586 timesteps across the slider is about 155 days
+   per pixel, so there is a date box beside it — type a date and the canvas
+   goes there. The speed picker sets how many timesteps a second playback
+   covers; at 1500× an 80-year daily run plays through in about twenty seconds
+   instead of three quarters of an hour.
+4. The selected node's panel charts its flow or volume over time.
+5. **What-if:** press **Δ** beside any numeric parameter to stage a change, then
    **▶ Run what-if** — the model file is *not* modified. Tick several runs to
    overlay and compare them.
-5. **Scenarios:** if the model defines pywr scenarios, a picker chooses which
+6. **Scenarios:** if the model defines pywr scenarios, a picker chooses which
    ensemble member is drawn.
+
+Clicking anywhere on a run's row shows it on the canvas, and reopening the app
+picks the last finished run back up rather than leaving the canvas grey.
+
+**When a run fails**, the **why?** button on the row leads with what actually
+broke — *"recorders.Gauge_flow.node references 'River_Gauge_A', which the model
+does not define"* rather than pywr's `KeyError` from inside a `.pyx` file —
+with the full traceback underneath for when that isn't enough.
 
 **The results plot.** **▦ Results** in the toolbar opens a plot across the
 bottom of the window, so you can watch the output while you move around the
@@ -211,10 +228,16 @@ the chart when you move to another, so you can build up a comparison across the
 network. Click a chip's name to jump back to that node on the canvas, and the
 dashed cursor tracks the time slider — click the chart to scrub.
 
-This complements the chart in the node panel rather than replacing it: that one
-shows *one node across several runs* (did my change help?), this one shows
-*several nodes from one run* (what is happening across the network?). Flow and
-volume can share the axis if you mix node types, and it says so when they do.
+It complements the chart in the node panel: that one shows *one node across
+several runs* (did my change help?), this one shows *several nodes from one
+run* (what is happening across the network?). Tick **compare runs** and it does
+both — one colour per node, one dash pattern per run, so the legend stays
+readable instead of becoming a node × run grid. Flow and volume can share the
+axis if you mix node types, and it says so when they do.
+
+Every run chart zooms: scroll to zoom about the cursor, drag to pan,
+double-click to reset. The y-axis follows what's on screen, so zooming in
+resolves detail rather than magnifying a flat line.
 
 **Getting results out.** Runs live in memory, so save what you need:
 
@@ -246,11 +269,34 @@ The Node / Runs / Model panel on the right collapses with the **›** button in
 its tab row, handing the whole width to the network; a **‹** handle at the
 top-right brings it back. The choice is remembered across reloads.
 
+### What the schematic shows — the View menu
+
+**View ▾** controls how much of the model the canvas draws. On a 162-node
+schematic every node carrying its name is unreadable, so:
+
+- **Labels** — turn off *Show every label* and pick the categories worth
+  naming. Storage and Output is usually enough: the conveyance links stay as
+  plain dots and the network structure becomes visible. Each row shows how many
+  nodes of that type the model actually has, and categories it has none of are
+  greyed out.
+- **Nodes** — hide **virtual** and **aggregated** nodes. These are pywr
+  bookkeeping rather than real water, and on a licence-heavy model they are a
+  large fraction of the node count. Searching for one that is hidden turns its
+  category back on rather than jumping to an invisible node.
+- **Style** — when the model came from a `.tcm`, *Use the .tcm's colours*
+  paints nodes with that file's own style sheet instead of ours. Shapes stay as
+  ours, since they are what keeps the schematic readable in greyscale.
+
+Opening a `.tcm` seeds all of this from the file, including **Restore the
+.tcm's view** — the zoom and corner the view file was saved at, mapped onto
+wherever the positions ended up. Without a `.tcm` the menu still works; it just
+starts from our defaults.
+
 ### Layout
 
 If a model has no positions — or junk ones (every node stacked on one
 coordinate, as pywr-editor leaves them) — a layout is computed automatically.
-**Layout ▾** offers four, applied instantly, with **Undo**:
+**Layout ▾** offers four, applied instantly:
 
 | Layout | Best for |
 |---|---|
@@ -265,6 +311,27 @@ standard library so layout works on a bare checkout. All are deterministic.
 **Save** writes positions into each node's `position.schematic`, so the file
 stays a valid pywr model.
 
+### Undo
+
+**↶ Undo** takes back the last edit — any edit, not just a layout. Moving a
+node, adding or deleting one, renaming, applying JSON from the dock, adding a
+recorder template: each is one step, and the button's tooltip names the one it
+would take back. ⌘/Ctrl+Z does the same. Twenty-five steps are kept.
+
+The server snapshots the model before each edit rather than recording an
+inverse for every operation — a deep copy of a 1,200-node model costs about
+3 ms, and it cannot drift out of step with what the operation actually did.
+
+### Runs belong to a model
+
+Opening a different model — or starting a new one — clears the runs, the
+results dock and any staged what-if changes, on both sides. A run describes the
+model that produced it: kept across a model change, it drove the time slider
+with the wrong calendar and charted nodes the open model did not have.
+
+Anything unsaved is confirmed before it goes, with the option to save first.
+**✕** beside the file name closes the model and returns to the empty state.
+
 ### External data files
 
 Real models point at data files by absolute paths from another machine
@@ -273,6 +340,12 @@ the model's folder, its parent and grandparent, and any folder you add — and
 shows a ✓/✗ report in **Model → Data files**. If something is missing it says
 so and blocks a run with a clear message rather than failing deep inside pywr.
 **The model file is never rewritten**; paths are remapped only for the run.
+
+Because files are found *relative to the model*, saving a copy somewhere else
+can cut them loose. **Save As** re-checks after writing, says which files no
+longer sit beside the copy, and adds the original folder to the search path so
+the session keeps working — telling you to copy the data across if you want the
+new file to travel.
 
 Every located file gets a **view** button:
 
@@ -438,7 +511,7 @@ model would be worse than missing one.
 ./run_tests.sh          # or: ./.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**229 tests**, using only Python's stdlib `unittest`. On a bare checkout they
+**282 tests**, using only Python's stdlib `unittest`. On a bare checkout they
 pass in under a second — the two groups needing extras skip themselves rather
 than fail:
 
@@ -447,7 +520,7 @@ than fail:
 | unit + API | just Flask | loaders, layout, graph ops, every route |
 | frontend contract | just Flask | that the JS modules still agree with `index.html` and the API — every `$("id")` exists, every `/api/…` is served |
 | pywr integration | the pywr environment | really executing a model, what-if overrides, per-edge flow recording, reading h5/csv |
-| browser smoke | `requirements-dev.txt` + chromium | the real UI in a browser: the network draws, path tracing, layouts, Undo, JSON editing, the dock both ways, adding/renaming/deleting entries, the templates |
+| browser smoke | `requirements-dev.txt` + chromium | the real UI in a browser: the network draws, path tracing, layouts, undo across edits, JSON editing, the dock both ways, adding/renaming/deleting entries, the templates |
 | performance | just Flask | a 1,200-node model lays out, opens and saves within a time budget |
 
 The frontend has no build step and no test framework, so the contract tests
@@ -495,11 +568,12 @@ PYWR_reader/
 │   ├── explorer.js               Browse model, edit / rename / delete entries
 │   ├── jsondock.js               the live JSON dock that follows the selection
 │   ├── results.js                the results plot docked across the bottom
+│   ├── viewprefs.js              the View menu — labels, node filters, style
 │   ├── catalog.js                recorder / parameter / chain templates
 │   ├── bundles.js                the "common set-ups" dialog with its live preview
 │   ├── pdfimport.js              rasterise a PDF's first page for tracing
 │   └── vendor/pdfjs/             PDF.js (Apache-2.0), lazy-loaded for PDF traces
-├── tests/                    229 unittest tests
+├── tests/                    282 unittest tests
 ├── examples/gw_network/      small self-contained runnable demo
 ├── requirements.txt          flask (that's the lot)
 ├── requirements-dev.txt      ruff + playwright, for dev/tests
@@ -522,16 +596,23 @@ PYWR_reader/
 - [x] Model explorer — filterable, readable browse of nodes/params/tables
 - [x] Scenario picker — choose and overlay ensemble members
 - [x] Per-edge exact flows at splits/junctions via spliced proxy links
-- [x] Layout picker — layered / force-directed / grouped / radial, with Undo
+- [x] Layout picker — layered / force-directed / grouped / radial
+- [x] Undo across every edit, not just layouts (⌘/Ctrl+Z, 25 deep)
+- [x] Run progress — percentage, timestep count, elapsed and estimated time
 - [x] Editable JSON — whole model, a section, or one entry, validated before
       it lands; renaming a node rewrites every reference to it
 - [x] Live JSON dock — a panel that stays open and follows the selection,
       showing a node with everything that hangs off it; edits flow both ways
-- [x] Reference safety for parameters, recorders and tables — rename rewrites
-      every reference, delete says what it leaves dangling, and names referred
-      to but defined nowhere show as warnings
+- [x] Reference safety for nodes, parameters, recorders and tables — rename
+      rewrites every reference, delete names what it will strand *before* you
+      confirm, names referred to but defined nowhere show in the Model tab and
+      as a badge beside Run, and a failed run explains the pywr error in those
+      terms
 - [x] Guided add for recorders and parameters, and parameter-chain templates
       previewed as JSON before they land
+- [x] Viewer parity with `.tcm` files — their style sheet, per-category label
+      toggles, virtual/aggregated filters and saved camera, all seeded from the
+      file and adjustable from **View ▾**
 - [ ] GeoJSON/Shapefile import for geographic networks
 - [ ] Open a submodel together with its inputs file, for model suites that
       split the network and its parameters across separate files
