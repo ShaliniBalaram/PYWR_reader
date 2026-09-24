@@ -4,6 +4,10 @@ Executed with the *pywr environment's* Python, not the app's:
 
     python runner.py <model.json> <output.json> [overrides.json]
 
+Set PYWR_READER_PROGRESS to a file path and the runner writes
+{"step": n, "total": N} there as it solves, so the app can show progress on a
+run that takes minutes. Absent, nothing is written and the run is unchanged.
+
 overrides.json (optional): {"nodes": {"<name>": {"<param>": value, ...}},
                             "timestepper": {...},
                             "url_map": {"<original url>": "<local path>"},
@@ -30,6 +34,7 @@ picker.
 import json
 import os
 import sys
+import time
 import traceback
 import warnings
 
@@ -125,6 +130,64 @@ def scenario_meta(model, shown):
 
 
 PROXY_PREFIX = "__reader_edge__"
+PROGRESS_NAME = "__reader_progress__"
+PROGRESS_INTERVAL = 0.25      # seconds between writes — cheap for the UI, and
+                              # far apart enough not to slow a daily-step run
+
+
+def make_progress_recorder(model, path, total):
+    """A recorder that reports how far the run has got.
+
+    pywr has no progress callback, but it calls every recorder's after() once
+    per timestep — which is exactly the hook, and a supported extension point
+    rather than a reimplementation of Model.run(). The file is rewritten in
+    place at a fixed interval; the app reads it when asked and is happy to miss
+    an update.
+
+    Returns None (and records nothing) when no progress path was asked for, or
+    when this pywr build will not take a Python recorder subclass."""
+    if not path:
+        return None
+    try:
+        from pywr.recorders import Recorder
+    except ImportError:
+        return None
+
+    class ProgressRecorder(Recorder):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.step = 0
+            self._last = 0.0
+
+        def reset(self):
+            self.step = 0
+            return 0
+
+        def after(self):
+            self.step += 1
+            now = time.time()
+            if now - self._last >= PROGRESS_INTERVAL:
+                self._last = now
+                self._write()
+            return 0
+
+        def finish(self):
+            self._write()
+            return 0
+
+        def _write(self):
+            try:
+                tmp = path + ".part"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump({"step": self.step, "total": total}, fh)
+                os.replace(tmp, path)     # the reader never sees a half file
+            except OSError:
+                pass                      # progress is a nicety, never fatal
+
+    try:
+        return ProgressRecorder(model, name=PROGRESS_NAME)
+    except Exception:  # noqa: BLE001 — an older pywr that won't subclass
+        return None
 
 
 def insert_edge_proxies(data):
@@ -227,6 +290,15 @@ def main():
                 proxy_recorders[proxy_index[name]] = rec
             else:
                 recorders[name] = (kind, rec)
+
+        # total timesteps, for the progress fraction — from the timestepper
+        # itself, which knows the calendar the model will walk
+        try:
+            total_steps = len(model.timestepper.datetime_index)
+        except Exception:  # noqa: BLE001 — not available until setup on some builds
+            total_steps = 0
+        make_progress_recorder(model, os.environ.get("PYWR_READER_PROGRESS"),
+                               total_steps)
 
         run_stats = model.run()
 

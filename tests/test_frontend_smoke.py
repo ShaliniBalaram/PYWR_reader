@@ -148,7 +148,7 @@ class TestFrontendSmoke(unittest.TestCase):
         self.page.click("#btn-layout")
         self.page.click(f"#layout-menu .menu-item:has-text('{label}')")
         if differs_from is None:
-            self.page.wait_for_selector("#btn-undo-layout", state="visible")
+            self.page.wait_for_selector("#btn-undo", state="visible")
         else:   # positions must have moved off the previous arrangement
             self.page.wait_for_function(
                 "w => { const xs = Object.values(S.positions).map(q => q[0]);"
@@ -335,10 +335,44 @@ class TestFrontendSmoke(unittest.TestCase):
         before = self._bbox()
         self._apply_layout("Radial", differs_from=before)
         self.assertNotEqual(self._bbox(), before)   # it really did change
-        self.page.click("#btn-undo-layout")
-        # .hidden is display:none, so wait for hidden — never for "visible"
-        self.page.wait_for_selector("#btn-undo-layout", state="hidden")
+        self.page.click("#btn-undo")
+        self.page.wait_for_function(
+            "w => Math.abs(Object.values(S.positions).map(q => q[0])"
+            "  .reduce((a, b) => Math.max(a, b), -Infinity)"
+            "  - Object.values(S.positions).map(q => q[0])"
+            "  .reduce((a, b) => Math.min(a, b), Infinity) - w) < 0.5",
+            arg=before[0])
         self.assertEqual(self._bbox(), before)
+        self.assertNoConsoleErrors()
+
+    def test_undo_takes_back_an_edit_not_just_a_layout(self):
+        """Undo used to cover layouts only — a delete was final."""
+        self.page.fill("#node-search-input", "Reservoir")
+        self.page.press("#node-search-input", "Enter")
+        self.page.wait_for_function("() => S.sel && S.sel.kind === 'node'")
+        name = self.page.evaluate("() => S.sel.name")
+        before = self.page.evaluate("() => S.graph.nodes.length")
+
+        self.page.click("#tab-node button.danger")
+        self.page.wait_for_selector(".ask-buttons")          # our own dialog
+        self.page.click(".ask-buttons button.danger")
+        self.page.wait_for_function(f"() => S.graph.nodes.length === {before - 1}")
+
+        self.page.click("#btn-undo")
+        self.page.wait_for_function(f"() => S.graph.nodes.length === {before}")
+        self.assertIn(name, self.page.evaluate("() => S.graph.nodes.map(n => n.name)"))
+        self.assertNoConsoleErrors()
+
+    def test_deleting_a_node_names_what_it_will_strand(self):
+        """The confirmation lists the references the delete leaves dangling."""
+        self.page.fill("#node-search-input", "Reservoir")
+        self.page.press("#node-search-input", "Enter")
+        self.page.wait_for_function("() => S.sel && S.sel.kind === 'node'")
+        self.page.click("#tab-node button.danger")
+        self.page.wait_for_selector(".ask-buttons")
+        text = self.page.inner_text("#modal")
+        self.assertRegex(text, r"recorders\.|parameters\.|nodes\[")
+        self.page.click(".ask-buttons button:has-text('Cancel')")
         self.assertNoConsoleErrors()
 
     # -- add menu -------------------------------------------------------
@@ -654,33 +688,61 @@ class TestFrontendSmoke(unittest.TestCase):
 
     def test_explorer_delete_warns_about_what_still_points_at_it(self):
         self._wire_a_parameter()
-        self.page.evaluate("window.confirm = () => true")
         self._explorer_row_button("Parameters", "urban_base", "✕")
+        # the app's own dialog now, not the browser's — so it can list the
+        # exact references instead of only counting them
+        self.page.wait_for_selector(".ask-buttons")
+        self.assertIn("urban_cap.parameters[0]", self.page.inner_text("#modal"))
+        self.page.click(".ask-buttons button.danger")
         self.page.wait_for_function(
             "() => !document.getElementById('toast').classList.contains('hidden')")
         self.assertIn("still referenced", self.page.inner_text("#toast"))
         self.assertNotIn("urban_base", app_module.WORKSPACE.model["parameters"])
         self.assertNoConsoleErrors()
 
+    def test_explorer_delete_can_be_called_off_and_hands_the_modal_back(self):
+        self._wire_a_parameter()
+        self._explorer_row_button("Parameters", "urban_base", "✕")
+        self.page.wait_for_selector(".ask-buttons")
+        self.page.click(".ask-buttons button:has-text('Cancel')")
+        self.page.wait_for_selector("#modal.explorer")   # back where we were
+        self.assertIn("urban_base", app_module.WORKSPACE.model["parameters"])
+        self.assertNoConsoleErrors()
+
     def test_dock_offers_to_carry_references_when_a_key_is_renamed(self):
         self._wire_a_parameter()
-        self.page.evaluate("""() => {
-          window.__asked = [];
-          window.confirm = m => { window.__asked.push(m); return true; };
-        }""")
         self._open_dock("related", node="Demand_Urban")
         self._edit_dock("""
           doc.parameters.urban_baseline = doc.parameters.urban_base;
           delete doc.parameters.urban_base;
         """)
         self.page.click("#dock-apply")
+        self.page.wait_for_selector(".ask-buttons")
+        self.assertIn("Rename parameter", self.page.inner_text("#modal h3"))
+        self.page.click(".ask-buttons button.primary")
         self.page.wait_for_function(
             "() => document.getElementById('dock-status').textContent"
             " === 'in sync'")
-        asked = self.page.evaluate("() => window.__asked")
-        self.assertTrue(asked and "Rename parameter" in asked[0], asked)
         params = app_module.WORKSPACE.model["parameters"]
         self.assertEqual(params["urban_cap"]["parameters"], ["urban_baseline"])
+        self.assertNoConsoleErrors()
+
+    def test_declining_the_dock_rename_leaves_the_reference_dangling(self):
+        """The other honest answer: a delete plus an add, references untouched."""
+        self._wire_a_parameter()
+        self._open_dock("related", node="Demand_Urban")
+        self._edit_dock("""
+          doc.parameters.urban_baseline = doc.parameters.urban_base;
+          delete doc.parameters.urban_base;
+        """)
+        self.page.click("#dock-apply")
+        self.page.wait_for_selector(".ask-buttons")
+        self.page.click(".ask-buttons button:has-text('Treat as delete')")
+        self.page.wait_for_function(
+            "() => document.getElementById('dock-status').textContent"
+            " === 'in sync'")
+        params = app_module.WORKSPACE.model["parameters"]
+        self.assertEqual(params["urban_cap"]["parameters"], ["urban_base"])
         self.assertNoConsoleErrors()
 
     def test_dock_flags_a_reference_left_pointing_nowhere(self):

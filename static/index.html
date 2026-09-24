@@ -19,8 +19,13 @@
     <button id="btn-layout" class="menu-btn" title="Recompute all positions">Layout ▾</button>
     <div id="layout-menu" class="menu hidden"></div>
   </div>
-  <button id="btn-undo-layout" class="hidden" title="Put the positions back as they were">Undo</button>
+  <button id="btn-undo" class="hidden" title="Take back the last edit">↶ Undo</button>
   <button id="btn-fit" title="Fit network in view">Fit</button>
+  <div class="menu-wrap">
+    <button id="btn-view" class="menu-btn"
+            title="Labels, node filters and colours — seeded from a .tcm view file">View ▾</button>
+    <div id="view-menu" class="menu hidden"></div>
+  </div>
   <div id="node-search" class="menu-wrap">
     <input id="node-search-input" type="search" autocomplete="off" spellcheck="false"
            placeholder="Find node…" title="Find a node by name or type — press /">
@@ -52,8 +57,12 @@
   <button id="btn-dock" title="Live JSON — a JSON view that follows what you select">{ } JSON</button>
   <span class="sep"></span>
   <button id="btn-run" class="primary" title="Run the model with pywr">▶ Run</button>
+  <button id="ref-badge" class="badge warn hidden"
+          title="References the model does not define"></button>
   <span id="env-chip" class="chip">checking…</span>
   <span id="file-chip" class="chip file"></span>
+  <button id="btn-close" class="chip-close hidden"
+          title="Close the model — back to the empty state">✕</button>
 </header>
 
 <main>
@@ -111,7 +120,15 @@
     </div>
     <div id="timebar" class="hidden">
       <button id="btn-play" title="Play / pause">▶</button>
+      <select id="play-speed" title="Playback speed — how many timesteps a second">
+        <option value="1">1×</option>
+        <option value="4" selected>4×</option>
+        <option value="30">30×</option>
+        <option value="200">200×</option>
+        <option value="1500">1500×</option>
+      </select>
       <input id="time-slider" type="range" min="0" max="0" value="0">
+      <input id="time-goto" type="date" title="Jump to a date">
       <span id="time-date" class="mono">—</span>
       <span id="time-idx" class="mono muted"></span>
       <span class="legend-flow">
@@ -130,6 +147,9 @@
       <span class="dock-label">Results</span>
       <span id="results-run" class="muted small"></span>
       <span class="spacer"></span>
+      <label id="results-compare-wrap" class="tiny-check hidden"
+             title="Overlay every run ticked in the Runs tab, not just the active one">
+        <input id="results-compare" type="checkbox"> compare runs</label>
       <button id="results-pin" class="tiny" title="Keep the selected node plotted while you look at others">Pin selected</button>
       <button id="results-clear" class="tiny" title="Unpin every node">Clear</button>
       <button id="results-close" class="tiny" title="Hide the results plot">✕</button>

@@ -9,7 +9,7 @@
    Apply moves the model. */
 
 import { S } from "./state.js";
-import { $, el, toast } from "./dom.js";
+import { $, el, toast, confirmAsk } from "./dom.js";
 import { api } from "./api.js";
 // updateGraph is a canvas-core function in app.js, which imports initDock from
 // here — the same deliberate cycle explorer.js has, and safe for the same
@@ -277,11 +277,38 @@ function detectRename(had, now) {
     ? { old: gone[0], new: fresh[0] } : null;
 }
 
+/** Ask about every rename the edit looks like, before merging anything.
+ *
+ *  The merge itself is synchronous, and the app's own dialog is a promise — so
+ *  the questions are asked up front and the answers handed to the merge, rather
+ *  than blocking it mid-loop the way the browser's confirm() did. */
+async function askRenames(parsed) {
+  const answers = {};
+  for (const section of ["parameters", "recorders", "tables"]) {
+    const now = parsed[section];
+    if (now === undefined || now === null || typeof now !== "object"
+        || Array.isArray(now)) continue;
+    const guess = detectRename((D.keys && D.keys[section]) || [], now);
+    if (!guess) continue;
+    const kind = section.replace(/s$/, "");
+    answers[section] = await confirmAsk(
+      `Rename ${kind} “${guess.old}” to “${guess.new}”?`,
+      "Every reference to it will be updated to the new name.",
+      { confirmLabel: "Rename and update references",
+        cancelLabel: "Treat as delete + add",
+        detail: `Delete + add leaves anything that referred to “${guess.old}” `
+          + "pointing at a name the model no longer defines." })
+      ? guess : null;
+  }
+  return answers;
+}
+
 async function applyDock() {
   if (box().disabled) return;
   let parsed;
   try { parsed = JSON.parse(box().value); }
   catch (e) { showError("Invalid JSON — " + e.message, "syntax"); return renderHead(); }
+  const renameAnswers = D.scope === "related" ? await askRenames(parsed) : {};
 
   try {
     let payload;
@@ -307,13 +334,9 @@ async function applyDock() {
           }
           const now = edited || {};
           let block = model[section] || (model[section] = {});
+          const guess = renameAnswers[section] || null;
           let renamed = null;
-          const guess = detectRename(had, now);
-          if (guess && confirm(
-            `Rename ${section.replace(/s$/, "")} “${guess.old}” to `
-            + `“${guess.new}”, updating every reference to it?\n\n`
-            + `Cancel treats it as removing “${guess.old}” and adding `
-            + `“${guess.new}”, leaving references pointing at the old name.`)) {
+          if (guess) {
             renames[section] = { [guess.old]: guess.new };
             renamed = guess;
             // swap the key in place: a renamed entry that jumps to the end of
@@ -356,9 +379,13 @@ async function applyDock() {
 
 /* ---------------------------------------------------------------- wiring */
 
-function setScope(scope) {
+const askDiscard = () => confirmAsk("Discard your JSON edits?",
+  "They have not been applied to the model.",
+  { confirmLabel: "Discard", danger: true });
+
+async function setScope(scope) {
   if (scope === D.scope) return;
-  if (isDirty() && !confirm("Discard the JSON edits you have not applied?")) return;
+  if (isDirty() && !await askDiscard()) return;
   D.scope = scope;
   D.base = null;               // nothing to lose now — always take the server's
   renderFromServer();
@@ -399,8 +426,8 @@ export function initDock() {
   $("btn-dock").addEventListener("click", () => toggleDock());
   $("dock-close").addEventListener("click", () => toggleDock(false));
   $("dock-apply").addEventListener("click", applyDock);
-  $("dock-revert").addEventListener("click", () => {
-    if (isDirty() && !confirm("Discard the JSON edits you have not applied?")) return;
+  $("dock-revert").addEventListener("click", async () => {
+    if (isDirty() && !await askDiscard()) return;
     D.base = null;
     renderFromServer();
   });

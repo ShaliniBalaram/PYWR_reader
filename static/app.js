@@ -5,7 +5,8 @@
 import { S, BLOCK, NODE_R } from "./state.js";
 import { TYPE_STYLES, OTHER_STYLE, RUN_COLORS, FLOW_RAMP, NODE_TYPES,
          typeStyle, flowColor } from "./palette.js";
-import { $, el, svgEl, fmt, toast, openModal, closeModal } from "./dom.js";
+import { $, el, svgEl, setChildren, fmt, toast, openModal, closeModal,
+         ask, confirmAsk } from "./dom.js";
 import { api } from "./api.js";
 import { dataViewer } from "./dataviewer.js";
 import { openModelExplorer } from "./explorer.js";
@@ -15,7 +16,11 @@ import { recordersFor, recorderDef, suggestName as suggestRecorderName }
   from "./catalog.js";
 import { bundlesBlock } from "./bundles.js";
 import { isPdf, pdfFirstPageToPng } from "./pdfimport.js";
-import { initResults, toggleResults, resultsChanged } from "./results.js";
+import { initResults, toggleResults, resultsChanged, resultsReset }
+  from "./results.js";
+import { initViewPrefs, viewPrefsChanged, nodeHidden, labelVisible,
+         nodeStyle, nodeRadius, labelFontSize, restoreSavedView, revealNode,
+         legendEntries } from "./viewprefs.js";
 
 $("modal-backdrop").addEventListener("mousedown", e => {
   if (e.target === $("modal-backdrop")) closeModal();
@@ -38,27 +43,39 @@ function applyView() {
   refreshBgHandle();
 }
 
+function edgeStubRadius(name) {
+  const node = S.nodeIdx.get(name);
+  return (node ? nodeRadius(node) : NODE_R) + 2;
+}
+
 function edgePath(edge) {
   const a = S.positions[edge.src], b = S.positions[edge.dst];
   if (!a || !b) return null;
   const dx = b[0] - a[0], dy = b[1] - a[1];
   const len = Math.hypot(dx, dy) || 1;
   const ux = dx / len, uy = dy / len;
-  const r = NODE_R + 2;
-  return `M${a[0] + ux * r},${a[1] + uy * r} L${b[0] - ux * (r + 3)},${b[1] - uy * (r + 3)}`;
+  const ra = edgeStubRadius(edge.src), rb = edgeStubRadius(edge.dst);
+  return `M${a[0] + ux * ra},${a[1] + uy * ra} L${b[0] - ux * (rb + 3)},${b[1] - uy * (rb + 3)}`;
 }
 
-function nodeShape(style) {
+function nodeShape(style, radius) {
+  const rn = radius || NODE_R;
+  const extra = {};
+  // a .tcm style sheet also names an outline colour; ours have none
+  if (style.stroke) { extra.stroke = style.stroke; extra["stroke-width"] = 1.5; }
+  if (typeof style.opacity === "number" && style.opacity < 1) {
+    extra["fill-opacity"] = style.opacity;
+  }
   if (style.shape === "square") {
-    return svgEl("rect", { x: -NODE_R, y: -NODE_R, width: NODE_R * 2,
-      height: NODE_R * 2, rx: 4, fill: style.color });
+    return svgEl("rect", { x: -rn, y: -rn, width: rn * 2,
+      height: rn * 2, rx: 4, fill: style.color, ...extra });
   }
   if (style.shape === "diamond") {
-    const r = NODE_R + 2;
+    const r = rn + 2;
     return svgEl("polygon", { points: `0,${-r} ${r},0 0,${r} ${-r},0`,
-      fill: style.color });
+      fill: style.color, ...extra });
   }
-  return svgEl("circle", { r: NODE_R, fill: style.color });
+  return svgEl("circle", { r: rn, fill: style.color, ...extra });
 }
 
 function renderGraph() {
@@ -70,10 +87,16 @@ function renderGraph() {
   edgeLabelEls = [];
   if (!S.graph) return;
 
+  // an edge whose endpoint is filtered out has nothing to join, so it goes too
+  const dropped = new Set(S.graph.nodes.filter(nodeHidden).map(n => n.name));
+  const labelPx = labelFontSize();
   S.graph.edges.forEach((edge, idx) => {
     const d = edgePath(edge);
     const hit = svgEl("path", { class: "edge-hit", d: d || "" });
     const line = svgEl("path", { class: "edge", d: d || "", "marker-end": "url(#arrow)" });
+    if (dropped.has(edge.src) || dropped.has(edge.dst)) {
+      hit.style.display = "none"; line.style.display = "none";
+    }
     hit.addEventListener("mousedown", e => { e.stopPropagation(); selectEdge(idx); });
     gEdges.append(hit, line);
     edgeEls.push({ hit, line });
@@ -84,12 +107,16 @@ function renderGraph() {
   });
 
   for (const node of S.graph.nodes) {
-    const style = typeStyle(node.type);
+    const style = nodeStyle(node);
+    const radius = nodeRadius(node);
     const g = svgEl("g", { class: "node" });
-    const shapeNode = nodeShape(style);
+    if (nodeHidden(node)) g.style.display = "none";
+    const shapeNode = nodeShape(style, radius);
     // circle nodes get their type color; shape carries the group for CVD
-    const label = svgEl("text", { y: NODE_R + 13 });
+    const label = svgEl("text", { y: radius + 13 });
     label.textContent = node.name;
+    if (labelPx) label.style.fontSize = `${labelPx}px`;
+    if (!labelVisible(node)) label.style.display = "none";
     g.append(shapeNode, label);
     positionNode(node.name, g);
     attachNodeEvents(g, node.name);
@@ -282,6 +309,7 @@ window.addEventListener("mouseup", () => {
   if (d.kind === "node") {
     if (!d.moved) selectNode(d.name);
     else api("/api/positions", { positions: { [d.name]: S.positions[d.name] } })
+      .then(res => { S.graph.undo_label = res.undo_label; renderUndo(); })
       .catch(err => toast(err.message, true));
   } else if (d.kind === "pan" && !d.moved) {
     deselect();
@@ -409,6 +437,14 @@ function pickSearch(i) {
   if (!n) return;
   searchResults.classList.add("hidden");
   searchInput.blur();
+  // the search looks through the whole model, so a hit may be one the View
+  // filters are hiding — show its category again rather than centring on a
+  // node that is not drawn
+  const revealed = revealNode(n);
+  if (revealed) {
+    renderGraph();
+    toast(`${revealed} nodes were hidden — switched back on to show ${n.name}`);
+  }
   selectNode(n.name);      // highlights it and opens its panel
   centerOnNode(n.name);    // brings it into view at the current zoom
 }
@@ -729,10 +765,14 @@ export function updateGraph(payload) {
     S.scenarioSel = dims.map((d, i) =>
       Math.max(0, Math.min(S.scenarioSel[i] || 0, d.size - 1)));
   }
+  viewPrefsChanged(payload);   // a .tcm may have brought presentation state
   renderGraph();
   renderNodePanel();
   renderModelPanel();
   renderScenarioPicker();
+  renderRefBadge();
+  renderUndo();
+  $("btn-close").classList.remove("hidden");
   $("file-chip").textContent = payload.path
     ? payload.path.split("/").pop() + (payload.dirty ? " •" : "") : "";
   $("file-chip").title = payload.path || "";
@@ -741,11 +781,32 @@ export function updateGraph(payload) {
 }
 
 async function refreshGraph() {
-  try { updateGraph(await api("/api/graph")); }
-  catch { /* no model open */ }
+  let payload;
+  try {
+    payload = await api("/api/graph");
+  } catch {
+    return;              // no model open — the only expected failure here
+  }
+  // deliberately not caught: a render error is a bug, and swallowing it left
+  // a half-drawn page with nothing in the console to explain it
+  updateGraph(payload);
 }
 
 /* --------------------------------------------------------- open / save */
+
+/* The file browser starts where you were last time rather than at your home
+   folder — a model deep under /Volumes took half a dozen clicks to reach, on
+   every single open. */
+const LAST_DIR_KEY = "pywr_reader_lastdir";
+function lastDir() {
+  try { return localStorage.getItem(LAST_DIR_KEY) || "~"; } catch { return "~"; }
+}
+function rememberDir(dir) {
+  try { if (dir) localStorage.setItem(LAST_DIR_KEY, dir); } catch { /* ignore */ }
+}
+/** The folder a path sits in — for remembering where a file was picked. */
+const dirOf = path => (path || "").replace(/[\\/][^\\/]*$/, "");
+
 function openFileModal() {
   let curPath = null;
   const pathbox = el("input", { class: "pathbox mono", type: "text",
@@ -758,6 +819,7 @@ function openFileModal() {
     try {
       const data = await api("/api/browse?path=" + encodeURIComponent(dir));
       curPath = data.path;
+      rememberDir(curPath);
       crumbs.textContent = data.path;
       // the server names the shortcuts for its own platform — drive letters on
       // Windows, /Volumes on a Mac — so nothing here has to guess
@@ -788,23 +850,12 @@ function openFileModal() {
   async function doOpen() {
     const path = pathbox.value.trim();
     if (!path) return;
-    try {
-      const payload = await api("/api/open", { path });
-      closeModal();
-      resetRunsState();
-      updateGraph(payload);
-      fitView();
-      if (payload.layout_was_auto) {
-        toast("No usable positions in the file — automatic layout applied");
-      }
-      (payload.warnings || []).forEach(w => toast(w));
-      loadBgForModel();
-      const missing = (payload.data && payload.data.missing) || [];
-      if (missing.length) {
-        toast(`${missing.length} data file(s) not found (${missing.join(", ")}) — `
-          + "add their folder in the Model → Data files section to run.", true);
-      }
-    } catch (err) { toast(err.message, true); }
+    // a .tcm lands on the open model as positions and leaves it in place, so
+    // only a real model swap is worth guarding
+    const isTcm = /\.tcm$/i.test(path);
+    if (!(isTcm && S.graph) && !await okToDiscard("Opening another model")) return;
+    closeModal();
+    await openPath(path);
   }
 
   openModal(
@@ -820,8 +871,53 @@ function openFileModal() {
       el("button", { onclick: closeModal }, "Cancel"),
       el("button", { class: "primary", onclick: doOpen }, "Open")),
   );
-  browse("~");
+  browse(lastDir());
   pathbox.addEventListener("keydown", e => { if (e.key === "Enter") doOpen(); });
+}
+
+/** Open a path and settle the whole app around it. Shared by the Open dialog
+ *  and the example button so they cannot drift apart — the example button used
+ *  to skip the run/results reset the dialog did. */
+async function openPath(path, opts = {}) {
+  let payload;
+  try {
+    payload = await api("/api/open", { path, ...opts });
+  } catch (err) { toast(err.message, true); return null; }
+
+  // A .tcm applied to the open model leaves that model in place — so the runs
+  // and results still describe what is on screen and must survive. The server
+  // says which of the two happened; the path cannot tell us, because a .tcm
+  // opened as a model reports the model file it names, not itself.
+  if (!payload.tcm_applied) resetForNewModel();
+  rememberDir(dirOf(path));
+  updateGraph(payload);
+  // a .tcm that saved a camera opens where the user left off; everything
+  // else gets the usual fit
+  if (!restoreSavedView(applyView)) fitView();
+  if (payload.layout_was_auto) {
+    toast("No usable positions in the file — automatic layout applied");
+  }
+  (payload.warnings || []).forEach(w => toast(w));
+  loadBgForModel();
+  const missing = (payload.data && payload.data.missing) || [];
+  if (missing.length) {
+    toast(`${missing.length} data file(s) not found (${missing.join(", ")}) — `
+      + "add their folder in the Model → Data files section to run.", true);
+  }
+  // Nothing in the .tcm matched, so it almost certainly belongs to a different
+  // model. Offer to open that one instead of leaving "did not match" as the
+  // whole story — before this there was no way to get there at all without
+  // restarting the app.
+  if (payload.tcm_unmatched) {
+    const go = await confirmAsk("That .tcm describes a different model",
+      "None of its node names are in the model you have open. Open the model "
+      + "the .tcm itself describes instead?",
+      { confirmLabel: "Open it as a model" });
+    if (go && await okToDiscard("Opening the .tcm as a model")) {
+      return openPath(path, { as_model: true });
+    }
+  }
+  return payload;
 }
 
 function newModelModal() {
@@ -830,10 +926,11 @@ function newModelModal() {
   const loadImg = el("input", { type: "checkbox" });
   loadImg.checked = true;
   async function create() {
+    if (!await okToDiscard("Starting a new model")) return;
     try {
       const payload = await api("/api/new", { title: nameBox.value.trim() });
       closeModal();
-      resetRunsState();
+      resetForNewModel();
       updateGraph(payload);
       S.view = { x: 60, y: 60, k: 1 }; applyView();
       loadBgForModel();
@@ -859,29 +956,63 @@ function newModelModal() {
   nameBox.addEventListener("keydown", e => { if (e.key === "Enter") create(); });
 }
 
+/* Save As pre-fills the current path, which is convenient right up until a
+   reflex Enter overwrites the file you meant to copy. So the suggestion is a
+   copy's name, and anything that would land on an existing file asks first. */
+function saveAsSuggestion() {
+  const current = (S.graph && S.graph.path) || "";
+  if (!current) return "";
+  return current.replace(/(\.json)?$/i, "") + "-copy.json";
+}
+
+async function pathExists(path) {
+  try {
+    return (await api("/api/path/exists?path=" + encodeURIComponent(path))).exists;
+  } catch { return false; }     // let the save itself report a real problem
+}
+
 function saveAsModal() {
   const pathbox = el("input", { class: "pathbox mono", type: "text",
-    value: (S.graph && S.graph.path) || "" });
+    value: saveAsSuggestion() });
+  async function doSave() {
+    const path = pathbox.value.trim();
+    if (!path) return;
+    if (await pathExists(path)) {
+      const go = await confirmAsk("Overwrite that file?",
+        `${path.split(/[\\/]/).pop()} already exists.`,
+        { confirmLabel: "Overwrite", danger: true });
+      if (!go) return;
+    }
+    const prevKey = bgKey();
+    try {
+      const res = await api("/api/save", { path });
+      closeModal();
+      toast("Saved " + res.path);
+      rememberDir(dirOf(res.path));
+      await refreshGraph();
+      rehomeBgAfterSave(prevKey);
+      // data files are found relative to the model's folder, so saving
+      // elsewhere can quietly cut them loose — the server says when it did
+      if (res.data_note) toast(res.data_note, true);
+    } catch (err) { toast(err.message, true); }
+  }
   openModal(
     el("h3", {}, "Save model as"),
     pathbox,
     el("p", { class: "muted small" },
       "Positions are stored in each node as position.schematic — the file stays a valid pywr model."),
+    el("p", { class: "muted small" },
+      "Data files are looked for beside the model, so a copy saved elsewhere "
+      + "may not find them — you'll be told if that happens."),
     el("div", { class: "row gap", style: "justify-content:flex-end" },
       el("button", { onclick: closeModal }, "Cancel"),
-      el("button", {
-        class: "primary",
-        onclick: async () => {
-          const prevKey = bgKey();
-          try {
-            const res = await api("/api/save", { path: pathbox.value.trim() });
-            closeModal(); toast("Saved " + res.path);
-            await refreshGraph();
-            rehomeBgAfterSave(prevKey);
-          } catch (err) { toast(err.message, true); }
-        },
-      }, "Save")),
+      el("button", { class: "primary", onclick: doSave }, "Save")),
   );
+  pathbox.focus();
+  // select the stem only: the folder is usually right, the name is what changes
+  const stem = pathbox.value.lastIndexOf("/") + 1 || pathbox.value.lastIndexOf("\\") + 1;
+  pathbox.setSelectionRange(stem, pathbox.value.length - ".json".length);
+  pathbox.addEventListener("keydown", e => { if (e.key === "Enter") doSave(); });
 }
 
 /* --------------------------------------------------------- add node UI */
@@ -982,7 +1113,9 @@ function renderNodePanel() {
         onclick: () => { S.traceMode = mode; refreshSelection(); renderNodePanel(); },
       }, label)));
 
-  pane.replaceChildren(
+  // setChildren, not replaceChildren: bundlesBlock returns null for a node
+  // type no template fits, and the raw DOM call would print that as "null"
+  setChildren(pane,
     el("div", { class: "pane-block" },
       el("div", { class: "props-title" }, name),
       el("span", { class: "type-badge", style: `background:${style.color}` },
@@ -1010,18 +1143,8 @@ function renderNodePanel() {
     recordersBlock(node),
     el("div", { class: "pane-block chart-area" }),
     el("div", { class: "pane-block" },
-      el("button", {
-        class: "danger",
-        onclick: async () => {
-          if (!confirm(`Delete node “${name}” and all its edges?`)) return;
-          try {
-            const payload = await api("/api/node/delete", { name });
-            (payload.delete_warnings || []).forEach(w => toast(w, true));
-            updateGraph(payload);
-            toast(`Deleted ${name}`);
-          } catch (err) { toast(err.message, true); }
-        },
-      }, "Delete node")),
+      el("button", { class: "danger", onclick: () => deleteNode(name) },
+        "Delete node")),
   );
 
   if (!document.getElementById("types-dl")) {
@@ -1029,6 +1152,47 @@ function renderNodePanel() {
       ...NODE_TYPES.map(t => el("option", { value: t }))));
   }
   renderNodeChart();
+}
+
+/** Delete a node, having first said what the delete will break.
+ *
+ *  The server already knew which recorders and parameters pointed at the node
+ *  — but it only said so afterwards, in a toast, by which time the damage was
+ *  done and the next run died with a bare KeyError. Asking first turns the
+ *  same information into a decision. */
+async function deleteNode(name) {
+  let stranded = [], nEdges = 0;
+  try {
+    const res = await api("/api/node/refs?name=" + encodeURIComponent(name));
+    stranded = res.stranded || [];
+    nEdges = res.n_edges || 0;
+  } catch { /* report what we can; the delete itself still warns */ }
+
+  const edgeText = nEdges
+    ? ` and its ${nEdges} edge${nEdges === 1 ? "" : "s"}`
+    : "";
+  const go = await ask({
+    title: `Delete “${name}”${edgeText}?`,
+    message: stranded.length === 1
+      ? "One other part of the model still points at it. Deleting the node "
+        + "leaves it pointing at a name nothing defines, and the model will "
+        + "not run until you fix it:"
+      : stranded.length
+        ? `${stranded.length} other parts of the model still point at it. `
+          + "Deleting the node leaves them pointing at a name nothing defines, "
+          + "and the model will not run until you fix them:"
+        : `Nothing else in the model refers to ${name}.`,
+    items: stranded,
+    buttons: [{ label: "Cancel", value: null },
+              { label: "Delete", value: true, kind: "danger" }],
+  });
+  if (!go) return;
+  try {
+    const payload = await api("/api/node/delete", { name });
+    (payload.delete_warnings || []).forEach(w => toast(w, true));
+    updateGraph(payload);
+    if (!(payload.delete_warnings || []).length) toast(`Deleted ${name}`);
+  } catch (err) { toast(err.message, true); }
 }
 
 /* ------------------------------------------------ recorders on this node */
@@ -1154,7 +1318,8 @@ function renderEdgePanel(pane) {
       el("button", {
         class: "danger",
         onclick: async () => {
-          if (!confirm(`Delete edge ${src} → ${dst}?`)) return;
+          if (!await confirmAsk("Delete this edge?", `${src} → ${dst}`,
+            { confirmLabel: "Delete", danger: true })) return;
           try {
             updateGraph(await api("/api/edge/delete", { src, dst }));
             toast("Edge deleted");
@@ -1166,7 +1331,7 @@ function renderEdgePanel(pane) {
   if (S.activeRun && S.activeRun.status === "done") {
     const frame = frameAt(S.t);
     if (frame) {
-      const col = frame.edgeCols.get(src + " " + dst);
+      const col = frame.edgeCols.get(edgeKey(src, dst));
       const val = col != null ? frame.edges[col] : null;
       const exact = col != null ? frame.edgeExact[col] : false;
       box.append(el("h3", {}, "Flow at current timestep"),
@@ -1184,11 +1349,20 @@ function renderModelPanel() {
   if (!S.graph) { pane.replaceChildren(el("p", { class: "muted" }, "No model open.")); return; }
   const g = S.graph;
   const ts = g.timestepper || {};
+  // the key describes the canvas, so it follows the same View switches
+  const entries = legendEntries();
   const legend = el("div", { class: "stack" },
-    ...TYPE_STYLES.concat(OTHER_STYLE).map(s => el("div", { class: "row gap" },
+    ...entries.map(item => el("div", { class: "row gap" + (item.hidden ? " legend-off" : "") },
       el("span", { class: "swatch", style:
-        `display:inline-block;width:12px;height:12px;border-radius:${s.shape === "circle" ? "50%" : "3px"};background:${s.color};${s.shape === "diamond" ? "transform:rotate(45deg);" : ""}` }),
-      el("span", { class: "small" }, s.label))));
+        `display:inline-block;width:12px;height:12px;border-radius:${item.shape === "circle" ? "50%" : "3px"};background:${item.color};`
+        + (item.shape === "diamond" ? "transform:rotate(45deg);" : "")
+        + (item.opacity != null && item.opacity < 1 ? `opacity:${item.opacity};` : "") }),
+      el("span", { class: "small" }, item.label),
+      item.hidden ? el("span", { class: "muted small" }, "hidden") : null)),
+    entries.length && entries[0].source
+      ? el("p", { class: "muted small" }, "Colours are the .tcm's — untick "
+          + "“Use the .tcm's colours” in View to go back to ours.")
+      : null);
   pane.replaceChildren(
     el("div", { class: "pane-block" },
       el("h3", {}, g.metadata && g.metadata.title || "Untitled model"),
@@ -1208,6 +1382,7 @@ function renderModelPanel() {
         kvRow("period", `${ts.start || "?"} → ${ts.end || "?"} (step ${ts.timestep || "?"})`),
       )),
     dataFilesBlock(g.data),
+    referenceWarningsBlock(g.reference_warnings),
     el("div", { class: "pane-block" }, el("h3", {}, "Node colour legend"), legend),
     el("div", { class: "pane-block" },
       el("button", { class: "primary", onclick: openModelExplorer }, "Browse model"),
@@ -1221,6 +1396,60 @@ function renderModelPanel() {
         },
       }, "Export CSV pair")),
   );
+}
+
+/** Names the model points at but defines nowhere.
+ *
+ *  The server has always computed these, but only the JSON dock rendered them
+ *  — so a user who never opened the dock never learned the model was broken,
+ *  and found out when a run died inside pywr instead. This block and the
+ *  toolbar badge put it where the damage is visible. */
+function referenceWarningsBlock(warnings) {
+  const list = warnings || [];
+  const block = el("div", { class: "pane-block" },
+    el("h3", {}, "Broken references"));
+  if (!list.length) {
+    block.append(el("p", { class: "muted small" },
+      "Every name this model refers to is defined somewhere in it."));
+    return block;
+  }
+  block.classList.add("warn-block");
+  block.append(
+    el("p", { class: "small" }, list.length === 1
+      ? "1 reference points at a name the model does not define. The model "
+        + "will not run until it is fixed:"
+      : `${list.length} references point at names the model does not define. `
+        + "The model will not run until they are fixed:"),
+    el("ul", { class: "warn-list" },
+      ...list.slice(0, 8).map(w => el("li", { class: "small" }, w)),
+      list.length > 8
+        ? el("li", { class: "muted small" }, `and ${list.length - 8} more`)
+        : null));
+  return block;
+}
+
+/** The same warnings as a count beside Run, so they are visible from anywhere
+ *  rather than only from the Model tab. */
+function renderRefBadge() {
+  const badge = $("ref-badge");
+  const list = (S.graph && S.graph.reference_warnings) || [];
+  badge.classList.toggle("hidden", !list.length);
+  if (!list.length) return;
+  badge.textContent = `⚠ ${list.length}`;
+  badge.title = list.length === 1
+    ? "1 reference points at a name the model does not define — click for details"
+    : `${list.length} references point at names the model does not define — click for details`;
+  badge.onclick = () => {
+    openModal(
+      el("h3", {}, "Broken references"),
+      el("p", { class: "muted small" },
+        "These names are referred to but defined nowhere in the model. pywr "
+        + "fails on the first one it reaches, so a run will not get far."),
+      el("ul", { class: "warn-list" },
+        ...list.map(w => el("li", { class: "small" }, w))),
+      el("div", { class: "row gap", style: "justify-content:flex-end;margin-top:10px" },
+        el("button", { onclick: closeModal }, "Close")));
+  };
 }
 
 /* ----------------------------------------------- model explorer (modal) */
@@ -1315,7 +1544,7 @@ function pickDataDir() {
         } catch (err) { toast(err.message, true); }
       } }, "Use this folder")),
   );
-  browse("~");
+  browse(lastDir());
 }
 const kvRow = (k, v) => el("tr", {}, el("td", { class: "k" }, k), el("td", {}, String(v)));
 
@@ -1455,8 +1684,58 @@ function openRunModal() {
 function resetRunsState() {
   S.activeRun = null; S.frames.clear(); S.frameReq.clear();
   S.compare.clear(); S.seriesCache.clear(); S.t = 0;
+  S.runs = [];
   stopPlay();
   $("timebar").classList.add("hidden");
+  renderRuns();
+}
+
+/** Everything the old model owned, let go of at once.
+ *
+ *  A run, a pinned chart, a staged what-if and a search hit all name nodes in
+ *  the model that produced them. Carrying any of them into a different model
+ *  doesn't just look untidy — activating a stale run drove the time slider
+ *  with the wrong calendar, and an empty model went on plotting the previous
+ *  one. The server drops its run store on the same event (api/files.py), so
+ *  this is the client half of one rule: results belong to a model. */
+function resetForNewModel() {
+  resetRunsState();
+  resultsReset();
+  S.whatif = [];
+  renderWhatIf();
+  S.sel = null;
+  searchInput.value = "";
+  searchMatches = [];
+  searchResults.classList.add("hidden");
+}
+
+/** Ask before throwing away unsaved edits. Resolves true to go ahead.
+ *
+ *  The file chip's dot was the only sign a model was dirty, and opening
+ *  another one took the edits with it without a word. */
+async function okToDiscard(what) {
+  if (!S.graph || !S.graph.dirty) return true;
+  const name = (S.graph.path || "").split(/[\\/]/).pop() || "this model";
+  const answer = await ask({
+    title: "Unsaved changes",
+    message: `${name} has changes that have not been saved. ${what} will `
+      + "discard them.",
+    buttons: [
+      { label: "Cancel", value: "cancel" },
+      { label: "Discard changes", value: "discard", kind: "danger" },
+      { label: "Save first", value: "save", kind: "primary" },
+    ],
+  });
+  if (answer === "save") {
+    if (!S.graph.path) { saveAsModal(); return false; }
+    try {
+      const res = await api("/api/save", {});
+      toast("Saved " + res.path);
+      await refreshGraph();
+      return true;
+    } catch (err) { toast(err.message, true); return false; }
+  }
+  return answer === "discard";
 }
 
 async function startRun(overrides, label, scenarioIndex) {
@@ -1477,6 +1756,8 @@ async function pollRun(runId) {
   const timer = setInterval(async () => {
     try {
       const st = await api("/api/run/" + runId);
+      // redraw while it runs too — that is what shows the progress bar moving
+      if (st.status === "running" || st.status === "queued") await refreshRuns();
       if (st.status === "done" || st.status === "failed") {
         clearInterval(timer);
         await refreshRuns();
@@ -1499,6 +1780,38 @@ async function refreshRuns() {
   renderRuns();
 }
 
+/** "4m 12s" — elapsed wall-clock for a run, from the server's own clock. */
+function elapsed(run) {
+  const from = run.started_at;
+  if (!from) return "";
+  const secs = Math.max(0, Math.round((run.finished_at || Date.now() / 1000) - from));
+  return secs < 60 ? `${secs}s`
+    : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
+}
+
+/** How far a running run has got. pywr gives no progress callback, so the
+ *  runner counts timesteps through a recorder and the server reads the count;
+ *  an 80-year run used to show a spinner and nothing else for a minute. */
+function progressLine(run) {
+  const p = run.progress;
+  const time = elapsed(run);
+  if (!p || !p.total) {
+    return el("span", { class: "muted small run-progress" },
+      time ? `solving… ${time}` : "solving…");
+  }
+  const frac = Math.max(0, Math.min(1, p.step / p.total));
+  const left = frac > 0.02 && p.step < p.total
+    ? ` · ~${Math.round(((run.finished_at || Date.now() / 1000) - run.started_at)
+        * (1 / frac - 1))}s left`
+    : "";
+  return el("span", { class: "run-progress" },
+    el("span", { class: "run-bar" },
+      el("span", { class: "run-bar-fill", style: `width:${(frac * 100).toFixed(1)}%` })),
+    el("span", { class: "muted small" },
+      `${Math.round(frac * 100)}% · ${p.step.toLocaleString()} of `
+      + `${p.total.toLocaleString()} steps · ${time}${left}`));
+}
+
 function renderRuns() {
   const list = $("runs-list");
   if (!S.runs.length) {
@@ -1519,9 +1832,23 @@ function renderRuns() {
         el("span", {}, run.label + (run.overrides ? " Δ" : "")),
         el("span", { class: "muted small" },
           (run.scenario_label ? ` · ${run.scenario_label}` : "")
-          + (run.n_steps ? ` · ${run.n_steps} steps` : ""))),
+          + (run.n_steps ? ` · ${run.n_steps} steps` : "")
+          + (run.status === "done" && elapsed(run) ? ` · ${elapsed(run)}` : "")),
+        run.status === "running" || run.status === "queued"
+          ? progressLine(run) : null),
       el("span", { class: "status " + run.status }, run.status),
     );
+    // the whole row activates the run. Before this only the radio did, so a
+    // reloaded page showed the runs but nothing on the canvas until you found
+    // a 13px target.
+    if (run.status === "done") {
+      item.classList.add("clickable");
+      item.title = "Show this run on the canvas";
+      item.addEventListener("click", e => {
+        if (e.target.closest("button, input")) return;   // the row's own controls
+        activateRun(run.id);
+      });
+    }
     if (run.status === "done") {
       if ((run.warnings || []).length) {
         item.append(el("span", {
@@ -1556,16 +1883,19 @@ function renderRuns() {
       cb.addEventListener("change", () => {
         cb.checked ? S.compare.add(run.id) : S.compare.delete(run.id);
         renderNodeChart();
+        resultsChanged();     // the dock overlays the same set
       });
+      cb.addEventListener("click", e => e.stopPropagation());
       item.append(cb);
     }
     if (run.status === "failed") {
-      item.style.cursor = "pointer";
-      item.addEventListener("click", async () => {
-        const st = await api("/api/run/" + run.id);
-        openModal(el("h3", {}, "Run failed"),
-          el("pre", { class: "log" }, (st.error || "") + "\n\n" + (st.traceback || "")));
-      });
+      item.classList.add("clickable");
+      item.title = "Show why this run failed";
+      item.append(el("button", {
+        class: "tiny", title: "Show why this run failed",
+        onclick: e => { e.stopPropagation(); showFailure(run.id); },
+      }, "why?"));
+      item.addEventListener("click", () => showFailure(run.id));
     }
     return item;
   }));
@@ -1575,6 +1905,34 @@ function renderRuns() {
     ? "Runs are kept in memory only. Use save on a run to keep it past a "
       + "restart; Open run… reloads a saved one."
     : "Runs are kept in memory until the app closes."));
+}
+
+/** Why a run failed, in the app's words where it has them.
+ *
+ *  pywr reports a reference to something deleted as a bare KeyError from
+ *  inside a .pyx file. The server matches that name against the model's own
+ *  dangling-reference list, so the first thing shown is what actually broke —
+ *  with the traceback still there underneath for when it isn't enough. */
+async function showFailure(runId) {
+  let st;
+  try { st = await api("/api/run/" + runId); }
+  catch (err) { return toast(err.message, true); }
+  const hints = st.hints || [];
+  openModal(
+    el("h3", {}, "Run failed"),
+    hints.length
+      ? el("div", { class: "fail-hint" },
+          el("p", {}, hints.length === 1 ? "What went wrong:"
+                                         : "What went wrong (most likely):"),
+          el("ul", { class: "warn-list" },
+            ...hints.map(h => el("li", { class: "small" }, h))),
+          el("p", { class: "muted small" },
+            "The Model tab lists every broken reference."))
+      : null,
+    el("p", { class: "muted small" }, "pywr's own report:"),
+    el("pre", { class: "log" }, (st.error || "") + "\n\n" + (st.traceback || "")),
+    el("div", { class: "row gap", style: "justify-content:flex-end;margin-top:10px" },
+      el("button", { onclick: closeModal }, "Close")));
 }
 
 async function activateRun(runId) {
@@ -1601,13 +1959,18 @@ async function activateRun(runId) {
 /* ------------------------------------------------------- frames / time */
 const blockOf = t => Math.floor(t / BLOCK) * BLOCK;
 
+/* Key for the per-frame edge lookup. A NUL byte, because a node name can
+   contain anything else — including the " -> " and " " a reader would reach
+   for first, which would make "A B" -> "C" and "A" -> "B C" collide. */
+const edgeKey = (src, dst) => src + "\0" + dst;
+
 async function ensureBlock(start) {
   if (!S.activeRun || S.frames.has(start) || S.frameReq.has(start)) return;
   S.frameReq.add(start);
   try {
     const data = await api(`/api/run/${S.activeRun.id}/frames?start=${start}&count=${BLOCK}`);
     const edgeCols = new Map();
-    data.edge_keys.forEach((k, i) => edgeCols.set(k[0] + " " + k[1], i));
+    data.edge_keys.forEach((k, i) => edgeCols.set(edgeKey(k[0], k[1]), i));
     const nodeCols = new Map();
     data.node_keys.forEach((k, i) => nodeCols.set(k, i));
     S.frames.set(start, { ...data, edgeCols, nodeCols });
@@ -1659,7 +2022,6 @@ function updateEdgeLabels(frame) {
     if (!lbl) return;
     let val = null;
     if (on && set && set.has(idx)) {
-      // edgeCols keys join with a NUL byte (this file's separator), not a space
       const col = frame.edgeCols.get(edge.src + "\0" + edge.dst);
       val = col != null ? frame.edges[col] : null;
     }
@@ -1682,6 +2044,7 @@ function updateFrameVisuals() {
   $("time-idx").textContent = frame ? `t=${S.t}` : "";
   updateEdgeLabels(frame);
   updateChartCursor();
+  syncTimeInputs();
   // a selected node's up/down-stream trace owns the edge stroke; the flow
   // labels above still show magnitudes, so we just skip re-colouring the lines
   if (S.sel && S.sel.kind === "node" && S.traceMode !== "off") return;
@@ -1697,7 +2060,7 @@ function updateFrameVisuals() {
       els.line.classList.remove("estimated");
       return;
     }
-    const col = frame.edgeCols.get(edge.src + " " + edge.dst);
+    const col = frame.edgeCols.get(edgeKey(edge.src, edge.dst));
     const val = col != null ? frame.edges[col] : null;
     els.line.classList.toggle("estimated", col != null && !frame.edgeExact[col]);
     if (val == null) {
@@ -1724,19 +2087,81 @@ async function setT(t) {
   if (S.sel && S.sel.kind === "edge") renderNodePanel();
 }
 
+/* Playback ran one timestep per 90 ms, full stop. That is 11 steps a second —
+   fine for a year, but an 80-year daily run is 29,586 steps, so playing it
+   through took over three quarters of an hour. The tick stays at 90 ms (any
+   faster and the canvas can't keep up) and the speed multiplies the *stride*,
+   which is what actually gets you across a long run. */
+const PLAY_TICK_MS = 90;
+
+function playStride() {
+  const perSecond = +($("play-speed").value || 4);
+  return Math.max(1, Math.round(perSecond * PLAY_TICK_MS / 1000));
+}
+
 function startPlay() {
   if (!S.activeRun) return;
   S.playing = true;
   $("btn-play").textContent = "❚❚";
+  clearInterval(S.playTimer);
   S.playTimer = setInterval(() => {
-    const next = S.t + 1 > S.activeRun.n_steps - 1 ? 0 : S.t + 1;
-    setT(next);
-  }, 90);
+    const last = S.activeRun.n_steps - 1;
+    const next = S.t + playStride();
+    setT(next > last ? 0 : next);
+  }, PLAY_TICK_MS);
 }
 function stopPlay() {
   S.playing = false;
   $("btn-play").textContent = "▶";
   clearInterval(S.playTimer);
+}
+
+/* Jump to a date rather than aim at it: 29,586 steps across ~190 px of slider
+   is about 155 days per pixel, so the slider alone cannot reach a given day.
+   The run's dates are sorted, so a binary search lands on the nearest one. */
+function stepForDate(iso) {
+  const run = S.activeRun;
+  if (!run || !run.date_first) return null;
+  if (iso <= run.date_first) return 0;
+  if (iso >= run.date_last) return run.n_steps - 1;
+  // interpolate into the run, then walk to the exact step using the frames we
+  // can fetch — a model may skip days (monthly steps), so the guess is refined
+  const span = Date.parse(run.date_last) - Date.parse(run.date_first);
+  const into = Date.parse(iso) - Date.parse(run.date_first);
+  if (!(span > 0)) return 0;
+  return Math.max(0, Math.min(run.n_steps - 1,
+    Math.round((into / span) * (run.n_steps - 1))));
+}
+
+async function gotoDate(iso) {
+  const guess = stepForDate(iso);
+  if (guess == null) return;
+  stopPlay();
+  await setT(guess);
+  // the interpolation assumes an even calendar; nudge onto the real step
+  for (let i = 0; i < 40; i++) {
+    const here = currentDate();
+    if (!here || here === iso) break;
+    const step = here < iso ? 1 : -1;
+    const next = S.t + step;
+    if (next < 0 || next >= S.activeRun.n_steps) break;
+    // stop as soon as we straddle the target rather than oscillate around it
+    await setT(next);
+    const now = currentDate();
+    if (!now || (step > 0 ? now > iso : now < iso)) break;
+  }
+  syncTimeInputs();
+}
+
+/** Keep the date box showing where the slider actually is. */
+function syncTimeInputs() {
+  const box = $("time-goto");
+  const run = S.activeRun;
+  if (!run) { box.value = ""; return; }
+  box.min = run.date_first || "";
+  box.max = run.date_last || "";
+  const here = currentDate();
+  if (here) box.value = here;
 }
 
 /* ------------------------------------------------------------- chart */
@@ -1795,96 +2220,192 @@ async function renderNodeChart() {
   }
 }
 
+/* The run charts — the node panel's and the results dock's.
+ *
+ *  Drawn from a visible index window rather than the whole series, because the
+ *  data viewer could already zoom and pan and these could not: an 80-year daily
+ *  run drawn into 312 px is ~95 timesteps per pixel, which is a shape, not a
+ *  reading. Scroll to zoom about the cursor, drag to pan, double-click to
+ *  reset — the same gestures the data viewer uses.
+ *
+ *  `dash` on a series draws it dashed, which is how the results dock separates
+ *  runs while keeping one colour per node. */
 export function buildChart(seriesList, { width = 312, height = 170 } = {}) {
   // the defaults are the sidebar's size; the results dock passes its own
   const W = width, H = height, m = { l: 44, r: 10, t: 8, b: 22 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const n = Math.max(...seriesList.map(s => s.values.length));
-  let lo = Infinity, hi = -Infinity;
-  for (const s of seriesList) for (const v of s.values) {
-    if (v < lo) lo = v;
-    if (v > hi) hi = v;
-  }
-  if (!isFinite(lo)) { lo = 0; hi = 1; }
-  if (lo > 0) lo = 0;
-  if (hi === lo) hi = lo + 1;
-  const X = i => m.l + (i / Math.max(1, n - 1)) * iw;
-  const Y = v => m.t + ih - ((v - lo) / (hi - lo)) * ih;
+  const dates = seriesList[0].dates;
+
+  // visible window, in series indices — [lo, hi] inclusive
+  let lo = 0, hi = Math.max(0, n - 1);
+  const MIN_SPAN = 4;          // never zoom past a handful of points
 
   const wrap = el("div", { class: "chart-box" });
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H });
+  const reset = el("button", {
+    class: "chart-reset hidden", title: "Show the whole series (or double-click)",
+    onclick: e => { e.stopPropagation(); lo = 0; hi = n - 1; draw(); },
+  }, "⤢ reset");
 
-  // gridlines + y ticks
-  const ticks = 4;
-  for (let i = 0; i <= ticks; i++) {
-    const v = lo + ((hi - lo) * i) / ticks;
-    const y = Y(v);
-    svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y, y2: y,
-      stroke: i === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
-    const label = svgEl("text", { x: m.l - 6, y: y + 3, "text-anchor": "end",
-      fill: "var(--muted)", "font-size": 9 });
-    label.textContent = fmt(v);
-    svg.append(label);
-  }
-  // x date ticks
-  const dates = seriesList[0].dates;
-  for (let i = 0; i < 4; i++) {
-    const idx = Math.round((i / 3) * (n - 1));
-    const label = svgEl("text", { x: X(idx), y: H - 6,
-      "text-anchor": i === 0 ? "start" : i === 3 ? "end" : "middle",
-      fill: "var(--muted)", "font-size": 9 });
-    label.textContent = (dates[idx] || "").slice(0, 7);
-    svg.append(label);
-  }
-  // series lines
-  for (const s of seriesList) {
-    let d = "";
-    const step = Math.max(1, Math.floor(s.values.length / 1200));
-    for (let i = 0; i < s.values.length; i += step) {
-      d += (d ? "L" : "M") + X(i).toFixed(1) + "," + Y(s.values[i]).toFixed(1);
+  const span = () => hi - lo;
+  const X = i => m.l + ((i - lo) / Math.max(1, span())) * iw;
+  const iAt = px => lo + ((px - m.l) / iw) * Math.max(1, span());
+
+  let cursor = null, hover = null, tip = null;
+
+  function draw() {
+    svg.replaceChildren();
+    reset.classList.toggle("hidden", lo === 0 && hi === n - 1);
+
+    // y range over what is on screen, so zooming in actually resolves detail
+    let vlo = Infinity, vhi = -Infinity;
+    for (const s of seriesList) {
+      for (let i = Math.max(0, lo); i <= Math.min(s.values.length - 1, hi); i++) {
+        const v = s.values[i];
+        if (v < vlo) vlo = v;
+        if (v > vhi) vhi = v;
+      }
     }
-    svg.append(svgEl("path", { d, fill: "none", stroke: s.color,
-      "stroke-width": 1.8, "stroke-linejoin": "round" }));
+    if (!isFinite(vlo)) { vlo = 0; vhi = 1; }
+    if (vlo > 0) vlo = 0;
+    if (vhi === vlo) vhi = vlo + 1;
+    const Y = v => m.t + ih - ((v - vlo) / (vhi - vlo)) * ih;
+
+    // gridlines + y ticks
+    const ticks = 4;
+    for (let i = 0; i <= ticks; i++) {
+      const v = vlo + ((vhi - vlo) * i) / ticks;
+      const y = Y(v);
+      svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y, y2: y,
+        stroke: i === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
+      const label = svgEl("text", { x: m.l - 6, y: y + 3, "text-anchor": "end",
+        fill: "var(--muted)", "font-size": 9 });
+      label.textContent = fmt(v);
+      svg.append(label);
+    }
+    // x date ticks
+    for (let i = 0; i < 4; i++) {
+      const idx = Math.round(lo + (i / 3) * span());
+      const label = svgEl("text", { x: X(idx), y: H - 6,
+        "text-anchor": i === 0 ? "start" : i === 3 ? "end" : "middle",
+        fill: "var(--muted)", "font-size": 9 });
+      // zoomed in far enough to see individual days, show them
+      label.textContent = (dates[idx] || "").slice(0, span() < 400 ? 10 : 7);
+      svg.append(label);
+    }
+    // series lines — thinned to about one point per pixel of the window
+    for (const s of seriesList) {
+      let d = "";
+      const from = Math.max(0, lo), to = Math.min(s.values.length - 1, hi);
+      const step = Math.max(1, Math.floor((to - from + 1) / Math.max(1, iw * 2)));
+      for (let i = from; i <= to; i += step) {
+        d += (d ? "L" : "M") + X(i).toFixed(1) + "," + Y(s.values[i]).toFixed(1);
+      }
+      const attrs = { d, fill: "none", stroke: s.color, "stroke-width": 1.8,
+                      "stroke-linejoin": "round" };
+      if (s.dash) attrs["stroke-dasharray"] = s.dash;
+      svg.append(svgEl("path", attrs));
+    }
+    // current-timestep cursor
+    cursor = svgEl("line", { class: "t-cursor", y1: m.t, y2: m.t + ih,
+      stroke: "var(--ink)", "stroke-dasharray": "3 3", "stroke-width": 1,
+      opacity: 0.55 });
+    svg.append(cursor);
+
+    // hover crosshair + tooltip; click scrubs the timeline
+    hover = svgEl("rect", { x: m.l, y: m.t, width: iw, height: ih,
+      fill: "transparent", style: "cursor: crosshair" });
+    hover.addEventListener("mousemove", e => {
+      if (panning) return;
+      const idx = Math.round(iAt(localX(e)));
+      if (idx < lo || idx > hi || idx < 0 || idx >= n) return;
+      if (!tip) { tip = el("div", { class: "chart-tip" }); document.body.append(tip); }
+      tip.replaceChildren(el("div", { class: "d" }, dates[idx] || ""),
+        ...seriesList.map(s => el("div", { class: "s" },
+          el("span", { class: "sw", style: `background:${s.color}` }),
+          el("span", {}, `${s.label}: ${fmt(s.values[idx])}`))));
+      tip.style.left = Math.min(window.innerWidth - 220, e.clientX + 12) + "px";
+      tip.style.top = (e.clientY + 12) + "px";
+    });
+    hover.addEventListener("mouseleave", dropTip);
+    hover.addEventListener("click", e => {
+      if (dragged) return;                 // a pan, not a click
+      const idx = Math.round(iAt(localX(e)));
+      if (idx >= 0 && idx < n) setT(idx);
+    });
+    svg.append(hover);
+    placeCursor();
   }
-  // current-timestep cursor
-  const cursor = svgEl("line", { class: "t-cursor", y1: m.t, y2: m.t + ih,
-    stroke: "var(--ink)", "stroke-dasharray": "3 3", "stroke-width": 1,
-    opacity: 0.55 });
-  svg.append(cursor);
 
-  // hover crosshair + tooltip; click scrubs the timeline
-  const hover = svgEl("rect", { x: m.l, y: m.t, width: iw, height: ih,
-    fill: "transparent", style: "cursor: crosshair" });
-  let tip = null;
-  hover.addEventListener("mousemove", e => {
+  const dropTip = () => { if (tip) { tip.remove(); tip = null; } };
+  /** Pointer x in the chart's own viewBox units, whatever it was scaled to. */
+  const localX = e => {
     const rect = svg.getBoundingClientRect();
-    const frac = (e.clientX - rect.left) * (W / rect.width);
-    const idx = Math.round(((frac - m.l) / iw) * (n - 1));
-    if (idx < 0 || idx >= n) return;
-    if (!tip) { tip = el("div", { class: "chart-tip" }); document.body.append(tip); }
-    tip.replaceChildren(el("div", { class: "d" }, dates[idx] || ""),
-      ...seriesList.map(s => el("div", { class: "s" },
-        el("span", { class: "sw", style: `background:${s.color}` }),
-        el("span", {}, `${s.label}: ${fmt(s.values[idx])}`))));
-    tip.style.left = Math.min(window.innerWidth - 220, e.clientX + 12) + "px";
-    tip.style.top = (e.clientY + 12) + "px";
-  });
-  hover.addEventListener("mouseleave", () => { if (tip) { tip.remove(); tip = null; } });
-  hover.addEventListener("click", e => {
-    const rect = svg.getBoundingClientRect();
-    const frac = (e.clientX - rect.left) * (W / rect.width);
-    const idx = Math.round(((frac - m.l) / iw) * (n - 1));
-    if (idx >= 0 && idx < n) setT(idx);
-  });
-  svg.append(hover);
-
-  wrap.append(svg);
-  wrap._updateCursor = () => {
-    const i = Math.min(S.t, n - 1);
-    cursor.setAttribute("x1", X(i));
-    cursor.setAttribute("x2", X(i));
+    return (e.clientX - rect.left) * (W / rect.width);
   };
-  wrap._updateCursor();
+  function placeCursor() {
+    if (!cursor) return;
+    const i = Math.min(S.t, n - 1);
+    const on = i >= lo && i <= hi;
+    cursor.style.display = on ? "" : "none";
+    if (on) { cursor.setAttribute("x1", X(i)); cursor.setAttribute("x2", X(i)); }
+  }
+
+  // ---- zoom about the cursor, pan by dragging
+  svg.addEventListener("wheel", e => {
+    // A chart already showing everything cannot zoom out further, so let that
+    // scroll through to the panel instead of swallowing it — otherwise the
+    // chart becomes a hole you cannot scroll past.
+    const atFullExtent = lo === 0 && hi === n - 1;
+    if (atFullExtent && e.deltaY > 0) return;
+    e.preventDefault();
+    dropTip();
+    const at = iAt(localX(e));
+    const factor = Math.exp(e.deltaY * 0.0015);
+    let width2 = Math.min(n - 1, Math.max(MIN_SPAN, span() * factor));
+    let lo2 = at - (at - lo) * (width2 / Math.max(1, span()));
+    lo2 = Math.max(0, Math.min(n - 1 - width2, lo2));
+    lo = Math.round(lo2);
+    hi = Math.round(lo2 + width2);
+    draw();
+  }, { passive: false });
+
+  // The window listeners live only for the length of a drag. A chart is
+  // rebuilt on every selection change, so leaving them attached would pile up
+  // a dead listener per chart for the life of the page.
+  let panning = null, dragged = false;
+  const onMove = e => {
+    if (!panning) return;
+    const rect = svg.getBoundingClientRect();
+    const byIdx = ((panning.x - e.clientX) * (W / rect.width) / iw)
+      * (panning.hi - panning.lo);
+    if (Math.abs(e.clientX - panning.x) > 3) { dragged = true; dropTip(); }
+    const width2 = panning.hi - panning.lo;
+    const lo2 = Math.max(0, Math.min(n - 1 - width2, panning.lo + byIdx));
+    lo = Math.round(lo2);
+    hi = Math.round(lo2 + width2);
+    draw();
+  };
+  const onUp = () => {
+    panning = null;
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    setTimeout(() => { dragged = false; }, 0);   // let the click handler see it
+  };
+  svg.addEventListener("mousedown", e => {
+    if (lo === 0 && hi === n - 1) return;   // nothing to pan to
+    panning = { x: e.clientX, lo, hi };
+    dragged = false;
+    e.preventDefault();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+  svg.addEventListener("dblclick", () => { lo = 0; hi = n - 1; draw(); });
+
+  wrap.append(svg, reset);
+  wrap._updateCursor = placeCursor;
+  draw();
   return wrap;
 }
 
@@ -1954,11 +2475,20 @@ document.querySelectorAll("#tabs button[data-tab]").forEach(b =>
 // Collapse the side panel to hand its width to the network, and bring it back.
 // The choice is remembered across reloads.
 function setSidebarCollapsed(collapsed) {
+  const before = canvas.clientWidth;
   $("sidebar").classList.toggle("collapsed", collapsed);
   $("sidebar-reopen").classList.toggle("hidden", !collapsed);
   try { localStorage.setItem("pywr_reader_sidebar", collapsed ? "1" : "0"); }
   catch { /* private mode — fine, just won't be remembered */ }
-  requestAnimationFrame(applyView);   // the canvas just changed width
+  // The canvas just gained (or lost) the sidebar's width, all on one side, so
+  // the network slid off-centre. Shift the view by half the change to keep it
+  // where it looks like it should be — a full re-fit would throw away the zoom
+  // and the part of the network you were looking at.
+  requestAnimationFrame(() => {
+    const after = canvas.clientWidth;
+    if (before && after) S.view.x += (after - before) / 2;
+    applyView();
+  });
 }
 $("btn-sidebar-collapse").addEventListener("click", () => setSidebarCollapsed(true));
 $("sidebar-reopen").addEventListener("click", () => setSidebarCollapsed(false));
@@ -1973,9 +2503,11 @@ $("btn-example").addEventListener("click", async () => {
   try {
     const { path } = await api("/api/example");
     if (!path) return toast("The example model isn't bundled with this build", true);
-    updateGraph(await api("/api/open", { path }));
-    requestAnimationFrame(() => requestAnimationFrame(fitView));
-    toast("Example model opened — click a node to trace its water path");
+    if (!await okToDiscard("Opening the example")) return;
+    if (await openPath(path)) {
+      requestAnimationFrame(() => requestAnimationFrame(fitView));
+      toast("Example model opened — click a node to trace its water path");
+    }
   } catch (err) { toast(err.message, true); }
 });
 async function offerExample() {
@@ -2009,8 +2541,10 @@ $("tp-smaller").addEventListener("click", () => scaleBgBy(1 / 1.1));
 $("tp-bigger").addEventListener("click", () => scaleBgBy(1.1));
 $("tp-fit").addEventListener("click", fitBgToView);
 $("tp-replace").addEventListener("click", () => $("trace-file").click());
-$("tp-remove").addEventListener("click", () => {
-  if (confirm("Remove the trace image?")) removeTraceImage();
+$("tp-remove").addEventListener("click", async () => {
+  if (await confirmAsk("Remove the trace image?",
+    "The nodes you traced over it stay where they are.",
+    { confirmLabel: "Remove", danger: true })) removeTraceImage();
 });
 $("tp-sidecar").addEventListener("click", saveTraceSidecar);
 $("tp-quick").addEventListener("change", e => { S.quickPlace = e.target.checked; });
@@ -2032,6 +2566,30 @@ function rehomeBgAfterSave(prevKey) {
   }
 }
 $("btn-saveas").addEventListener("click", () => S.graph && saveAsModal());
+/* There was no way back to the empty state once anything was open — which is
+   also the only state a .tcm can be opened as a model in. */
+$("btn-close").addEventListener("click", async () => {
+  if (!S.graph) return;
+  if (!await okToDiscard("Closing the model")) return;
+  try {
+    await api("/api/close", {});
+    resetForNewModel();
+    S.graph = null; S.nodeIdx = new Map(); S.positions = {}; S.bg = null;
+    renderGraph();
+    renderBg();
+    renderNodePanel();
+    renderModelPanel();
+    renderRefBadge();
+    renderUndo();
+    $("empty-state").classList.remove("hidden");
+    $("btn-close").classList.add("hidden");
+    $("file-chip").textContent = "";
+    $("file-chip").title = "";
+    dockModelChanged();
+    setMode("select");
+    toast("Model closed");
+  } catch (err) { toast(err.message, true); }
+});
 /* ------------------------------------------------------- toolbar menus */
 function closeMenus(except) {
   document.querySelectorAll(".menu").forEach(m => {
@@ -2043,6 +2601,18 @@ function toggleMenu(id) {
   const show = menu.classList.contains("hidden");
   closeMenus(menu);
   menu.classList.toggle("hidden", !show);
+  if (show) keepMenuOnScreen(menu);
+}
+
+/* Toolbar menus hang from the left edge of their button. For the buttons over
+   on the right that runs the menu off the window — so measure once it is
+   visible and pin it to the button's right edge instead when it would. */
+function keepMenuOnScreen(menu) {
+  menu.classList.remove("flip-right");
+  const right = menu.getBoundingClientRect().right;
+  if (right > document.documentElement.clientWidth - 4) {
+    menu.classList.add("flip-right");
+  }
 }
 // a click anywhere else dismisses an open menu
 document.addEventListener("click", e => {
@@ -2065,30 +2635,45 @@ async function loadLayouts() {
 async function applyLayout(kind, label) {
   closeMenus();
   if (!S.graph) return;
-  const before = Object.fromEntries(
-    Object.entries(S.positions).map(([k, v]) => [k, [...v]]));
   try {
     updateGraph(await api("/api/layout", { mode: "all", kind }));
     fitView();
-    S.layoutUndo = before;                 // only offer Undo once one worked
-    $("btn-undo-layout").classList.remove("hidden");
     toast(`${label} layout applied`);
   } catch (err) { toast(err.message, true); }
 }
 
-$("btn-layout").addEventListener("click", () => toggleMenu("layout-menu"));
-$("btn-undo-layout").addEventListener("click", async () => {
-  if (!S.layoutUndo) return;
+/* Undo used to cover layouts and nothing else, one level deep: a delete, a
+   rename or a JSON Apply was final. The server now snapshots the model before
+   every edit, so this is simply a button on that stack — and it says what it
+   is about to take back, because "Undo" alone after a few edits is a guess. */
+function renderUndo() {
+  const btn = $("btn-undo");
+  const label = S.graph && S.graph.undo_label;
+  btn.classList.toggle("hidden", !label);
+  if (!label) return;
+  btn.textContent = "↶ Undo";
+  btn.title = `Take back: ${label}`;
+}
+
+async function doUndo() {
+  if (!S.graph || !S.graph.undo_label) return;
   try {
-    await api("/api/positions", { positions: S.layoutUndo });
-    updateGraph(await api("/api/graph"));
-    fitView();
-    S.layoutUndo = null;
-    $("btn-undo-layout").classList.add("hidden");
-    toast("Positions restored");
+    const payload = await api("/api/undo", {});
+    const wasLayout = /^layout/.test(payload.undone || "");
+    updateGraph(payload);
+    if (wasLayout) fitView();
+    toast(`Undone: ${payload.undone}`);
   } catch (err) { toast(err.message, true); }
-});
+}
+
+$("btn-layout").addEventListener("click", () => toggleMenu("layout-menu"));
+$("btn-undo").addEventListener("click", doUndo);
 $("btn-fit").addEventListener("click", fitView);
+$("btn-view").addEventListener("click", () => toggleMenu("view-menu"));
+initViewPrefs(action => {
+  if (action === "restore-view") { restoreSavedView(applyView); closeMenus(); return; }
+  renderGraph();
+});
 $("btn-add").addEventListener("click", () => toggleMenu("add-menu"));
 $("btn-mode-select").addEventListener("click", () => setMode("select"));
 $("btn-mode-addnode").addEventListener("click", () => {
@@ -2107,6 +2692,10 @@ $("btn-run-whatif").addEventListener("click", () =>
   startRun(whatifOverrides(), `what-if ${S.runs.length + 1}`, currentScenarioIndex()));
 $("btn-play").addEventListener("click", () => S.playing ? stopPlay() : startPlay());
 $("time-slider").addEventListener("input", e => { stopPlay(); setT(+e.target.value); });
+$("time-goto").addEventListener("change", e => {
+  if (e.target.value) gotoDate(e.target.value);
+});
+$("play-speed").addEventListener("change", () => { if (S.playing) startPlay(); });
 $("btn-values").addEventListener("click", () => {
   S.showEdgeValues = !S.showEdgeValues;
   $("btn-values").classList.toggle("active", S.showEdgeValues);
@@ -2118,6 +2707,12 @@ NODE_TYPES.forEach(t => typeSel.append(el("option", {}, t)));
 typeSel.value = "link";
 
 window.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey
+      && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "INPUT") {
+    e.preventDefault();
+    doUndo();
+    return;
+  }
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" ||
       e.target.tagName === "SELECT") return;
   if (e.key === "/") {           // jump to the node search, like many editors
@@ -2159,6 +2754,11 @@ window.addEventListener("resize", applyView);
   // resume polling for any run still in flight
   S.runs.filter(r => r.status === "running" || r.status === "queued")
     .forEach(r => pollRun(r.id));
+  // A reload restored the run list but left nothing active, so the time slider
+  // and the flow colours were gone until you hunted for the radio. Pick up
+  // where the page left off instead.
+  const lastDone = [...S.runs].reverse().find(r => r.status === "done");
+  if (lastDone) activateRun(lastDone.id);
 })();
 
 

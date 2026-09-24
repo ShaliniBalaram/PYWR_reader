@@ -35,3 +35,21 @@ export function flowColor(t) {
   const i = Math.min(FLOW_RAMP.length - 2, Math.floor(x));
   return lerpHex(FLOW_RAMP[i], FLOW_RAMP[i + 1], x - i);
 }
+
+/* The eight node categories a .tcm viewer names in its style sheet and label
+   toggles. Order matters: "annualvirtualstorage" is Virtual, not Storage, and
+   "riversplitwithgauge" is a Gauge, not a Link. */
+export const TCM_CATEGORIES = ["Storage", "Input", "Output", "Link", "Gauge",
+  "Aggregated", "Virtual", "Other"];
+
+export function tcmCategory(type) {
+  const t = String(type || "").toLowerCase();
+  if (/virtual/.test(t)) return "Virtual";
+  if (/aggregated/.test(t)) return "Aggregated";
+  if (/gauge/.test(t)) return "Gauge";
+  if (/storage|reservoir|aquifer/.test(t)) return "Storage";
+  if (/input|catchment|discharge/.test(t)) return "Input";
+  if (/output|demand/.test(t)) return "Output";
+  if (/link|river|delay|break|piecewise|split/.test(t)) return "Link";
+  return "Other";
+}

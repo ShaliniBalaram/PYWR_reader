@@ -23,7 +23,6 @@ export const S = {
   scenarioSel: [],        // per-scenario-dimension selected member index
   showEdgeValues: true,   // draw flow numbers on the selected path during a run
   labelEdges: new Set(),  // edge indices to label (selected node's path)
-  layoutUndo: null,       // positions before the last layout, for Undo
   seriesCache: new Map(), // `${runId}|${node}` -> series payload
   bg: null,               // trace image {src,x,y,scale,opacity,locked,natW,natH}
   quickPlace: false,      // place traced nodes without the dialog

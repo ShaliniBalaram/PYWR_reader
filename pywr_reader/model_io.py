@@ -4,7 +4,9 @@ Supported inputs:
   - PyWR model JSON (the native format, as produced by pywr, pywr-editor,
     Graph Overlay PyWR, etc.)
   - .tcm view files (gzipped JSON produced by the PyWR TCM viewer): hold node
-    positions keyed by node name plus a pointer to the source model JSON.
+    positions keyed by node name, a pointer to the source model JSON, and the
+    viewer's own presentation state — per-category colours and radii, label
+    toggles, virtual/aggregated filters and the saved camera.
   - CSV pairs (nodes.csv + nodes_edges.csv) in the Graph Overlay format.
 
 The in-memory representation keeps the *full* pywr model dict untouched
@@ -78,12 +80,122 @@ def load_pywr_json(path):
     return model
 
 
+# .tcm style sheets name five node categories; the label toggles name eight.
+# Categories with no entry in a style sheet fall back along this chain.
+_STYLE_FALLBACK = {"Gauge": "Link", "Aggregated": "Other", "Virtual": "Other"}
+
+_LABEL_FLAGS = {
+    "Storage": "show_storage_labels", "Input": "show_input_labels",
+    "Link": "show_link_labels", "Output": "show_output_labels",
+    "Gauge": "show_gauge_labels", "Aggregated": "show_aggregated_labels",
+    "Virtual": "show_virtual_labels", "Other": "show_other_labels",
+}
+
+
+def _rgba_hex(value):
+    """[r, g, b, a] (0-255) -> ("#rrggbb", alpha 0-1). None if unusable."""
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return None
+    try:
+        r, g, b = (max(0, min(255, int(round(float(c))))) for c in value[:3])
+    except (TypeError, ValueError):
+        return None
+    alpha = 1.0
+    if len(value) > 3:
+        try:
+            alpha = max(0.0, min(1.0, float(value[3]) / 255.0))
+        except (TypeError, ValueError):
+            alpha = 1.0
+    return f"#{r:02x}{g:02x}{b:02x}", alpha
+
+
+def _tcm_view(core, components):
+    """The viewer's presentation state, normalised for the frontend.
+
+    Everything here is optional — .tcm files in the wild omit sections — so
+    each block is read defensively and left out entirely when absent.
+    """
+    view = {}
+
+    sheet = (components.get("style_sheet") or {}).get("nodes") or {}
+    styles = {}
+    for category, spec in sheet.items():
+        if not isinstance(spec, dict):
+            continue
+        entry = {}
+        fill = _rgba_hex(spec.get("color"))
+        if fill:
+            entry["color"], entry["opacity"] = fill
+        stroke = _rgba_hex(spec.get("edge_color"))
+        if stroke:
+            entry["edge_color"] = stroke[0]
+        try:
+            radius = float(spec.get("radius"))
+            if radius > 0:
+                entry["radius"] = radius
+        except (TypeError, ValueError):
+            pass
+        if entry:
+            styles[str(category)] = entry
+    for category, fallback in _STYLE_FALLBACK.items():
+        if category not in styles and fallback in styles:
+            styles[category] = dict(styles[fallback])
+    if styles:
+        view["styles"] = styles
+
+    settings = core.get("settings") or {}
+    nodes_cfg = settings.get("nodes") or {}
+    if "show_virtual" in nodes_cfg:
+        view["show_virtual"] = bool(nodes_cfg.get("show_virtual"))
+    if "show_aggregated" in nodes_cfg:
+        view["show_aggregated"] = bool(nodes_cfg.get("show_aggregated"))
+
+    labels_cfg = nodes_cfg.get("labels") or {}
+    if labels_cfg:
+        labels = {}
+        # show_all_labels is the viewer's master switch; the per-category flags
+        # only bite once it is on, so carry both rather than collapsing them.
+        if "show_all_labels" in labels_cfg:
+            labels["all"] = bool(labels_cfg.get("show_all_labels"))
+        per_category = {}
+        for category, flag in _LABEL_FLAGS.items():
+            if flag in labels_cfg:
+                per_category[category] = bool(labels_cfg.get(flag))
+        if per_category:
+            labels["categories"] = per_category
+        try:
+            size = float(labels_cfg.get("text_size"))
+            if size > 0:
+                labels["text_size"] = size
+        except (TypeError, ValueError):
+            pass
+        if labels:
+            view["labels"] = labels
+
+    # The camera is recorded in the viewer's *display* space — the same space
+    # the transformed node positions land in — as the world point under the
+    # window's top-left corner plus pixels-per-world-unit.
+    port = core.get("view_port") or {}
+    origin = port.get("origin") or {}
+    try:
+        scale = float(port.get("scale"))
+        if scale > 0 and "x" in origin and "y" in origin:
+            view["viewport"] = {"origin": [float(origin["x"]), float(origin["y"])],
+                                "scale": scale}
+    except (TypeError, ValueError):
+        pass
+
+    return view
+
+
 def load_tcm(path):
     """Parse a .tcm viewer file.
 
-    Returns (positions, source_model_path, transforms). source_model_path is
-    the path recorded inside the file (often from another machine — the caller
-    should also try basename matches near the .tcm itself).
+    Returns (positions, source_model_path, transforms, view). source_model_path
+    is the path recorded inside the file (often from another machine — the
+    caller should also try basename matches near the .tcm itself). view is the
+    viewer's presentation state (see _tcm_view); it is {} when the file carries
+    none of it.
     """
     with open(path, "rb") as fh:
         raw = fh.read()
@@ -118,7 +230,7 @@ def load_tcm(path):
             source_path = str(version["Path"])
             break
 
-    return positions, source_path, transforms
+    return positions, source_path, transforms, _tcm_view(core, components)
 
 
 def find_tcm_source_model(tcm_path, source_path):
@@ -219,7 +331,7 @@ def load_any(path):
     warnings = []
 
     if ext == ".tcm":
-        positions, source_path, _ = load_tcm(path)
+        positions, source_path, _, tcm_view = load_tcm(path)
         model_path, model = find_tcm_source_model(path, source_path)
         if model is None:
             raise ValueError(
@@ -240,7 +352,8 @@ def load_any(path):
             warnings.append(f".tcm positions applied to {matched} nodes "
                             f"(model: {os.path.basename(model_path)})")
         return {"model": model, "positions": merged, "path": model_path,
-                "source": "tcm", "warnings": warnings}
+                "source": "tcm", "warnings": warnings,
+                "view": tcm_view if matched else {}}
 
     if ext == ".csv":
         model = load_csv_pair(path)
